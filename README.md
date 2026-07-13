@@ -31,26 +31,6 @@ This platform preserves accepted history, derives current state deterministicall
 | Human control | Alerts become owned reconciliation cases with event-backed resolution |
 | Traceability | Asset, transfer, sync, inspection, alert, and case views remain linked |
 
-## Screenshots
-
-### Operations Dashboard
-
-![Operations dashboard](docs/images/dashboard-view.png)
-
-### Asset Projection Detail
-
-![Asset projection detail](docs/images/asset-detail-view.png)
-
-### Reconciliation Case
-
-![Reconciliation case detail](docs/images/reconciliation-case-detail-view.png)
-
-### Sync Batch Detail
-
-![Sync batch detail](docs/images/sync-batch-detail-view.png)
-
-The strongest single depth view is **Asset Projection Detail**. It combines projected state, projection-versus-stream sequence, accepted event history, transfers, reconciliation cases, and sync batches in one operator surface.
-
 ## Architecture at a Glance
 
 ~~~mermaid
