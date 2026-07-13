@@ -1,5 +1,7 @@
 # Distributed Ops Control Platform
 
+[![CI](https://github.com/mholton-ops/distributed-ops-control-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/mholton-ops/distributed-ops-control-platform/actions/workflows/ci.yml)
+
 A clean-room reference implementation showing how multi-site operations detect, explain, and resolve drift between accepted history and current operating state.
 
 The system models sites that can work independently, reconnect later, replay queued events, and disagree about asset location, transfer status, evidence, or projected state. It turns those disagreements into explicit operator work instead of hiding them in mutable records.
@@ -128,8 +130,17 @@ SIM_SCENARIO=sync-lag-divergence npm run start --workspace apps/simulator
 
 ## Verification
 
+The GitHub Actions gate performs a locked clean install, deterministic package and application builds, domain and API tests, and a production-dependency audit:
+
 ~~~bash
-npm test
+npm ci --no-audit --no-fund
+npm run verify
+npm audit --omit=dev --audit-level=high
+~~~
+
+The full-stack browser suite remains available when the Docker services are running:
+
+~~~bash
 npm run test:e2e
 ~~~
 
