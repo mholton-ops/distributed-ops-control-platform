@@ -8,20 +8,24 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build:packages && npm run build:apps",
     "dev": "npm run dev --workspace apps/api",
     "dev:api": "npm run dev --workspace apps/api",
     "dev:web": "npm run dev --workspace apps/web",
     "dev:simulator": "npm run dev --workspace apps/simulator",
     "db:migrate": "npm run db:migrate --workspace apps/api",
     "db:seed": "npm run seed --workspace apps/api",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run build:packages && npm run test:unit",
     "test:e2e": "playwright test",
-    "lint": "npm run lint --workspaces --if-present"
+    "lint": "npm run lint --workspaces --if-present",
+    "build:packages": "npm run build --workspace @ops/contracts && npm run build --workspace @ops/domain && npm run build --workspace @ops/ui",
+    "build:apps": "npm run build --workspace @ops/api && npm run build --workspace @ops/simulator && npm run build --workspace @ops/web",
+    "test:unit": "npm run test --workspace @ops/domain && npm run test --workspace @ops/api",
+    "verify": "npm run build && npm run test:unit"
   },
   "devDependencies": {
     "@playwright/test": "^1.54.2",
-    "postcss": "^8.5.6",
+    "postcss": "8.5.19",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
