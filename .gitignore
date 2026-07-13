@@ -11,3 +11,4 @@ dist
 .next
 playwright-report
 test-results
+seed-out.txt
