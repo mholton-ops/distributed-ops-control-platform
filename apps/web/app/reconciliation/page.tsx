@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { fetchJson } from "../../lib/api";
 import { CopyValue } from "../../components/copy-value";
+import { DataFreshness } from "../../components/data-freshness";
 import { DetailsLink } from "../../components/details-link";
 import { StatusBadge } from "../../components/status-badge";
-import { ReconciliationActions } from "../../components/reconciliation-actions";
 import { OpenCaseForm } from "../../components/open-case-form";
 import { formatCodeLabel, formatTimestampWithAge, shortId } from "../../lib/format";
 import {
@@ -96,20 +96,24 @@ export default async function ReconciliationPage({
     return true;
   });
 
-  const alertById = new Map(filteredAlerts.map((alert) => [alert.id, alert]));
+  const alertById = new Map(alerts.data.map((alert) => [alert.id, alert]));
   const filteredCases = cases.data.filter((record) => {
+    const sourceAlert = record.alertId ? alertById.get(record.alertId) : undefined;
     if (statusFilter && record.status !== statusFilter) {
       return false;
     }
     if (siteFilter && record.siteId !== siteFilter) {
       return false;
     }
-    if (
-      assetQuery &&
-      !matchesContains(record.assetId, assetQuery) &&
-      !matchesContains(record.id, assetQuery) &&
-      !matchesContains(record.title, assetQuery)
-    ) {
+    const matchesCaseQuery =
+      matchesContains(record.assetId, assetQuery) ||
+      matchesContains(record.id, assetQuery) ||
+      matchesContains(record.title, assetQuery);
+    const matchesLinkedAlertQuery =
+      matchesContains(sourceAlert?.id, assetQuery) ||
+      matchesContains(sourceAlert?.assetId, assetQuery) ||
+      matchesContains(sourceAlert?.summary, assetQuery);
+    if (assetQuery && !matchesCaseQuery && !matchesLinkedAlertQuery) {
       return false;
     }
     if (!isWithinWindow(record.openedAt, windowHours)) {
@@ -120,7 +124,6 @@ export default async function ReconciliationPage({
       if (!record.alertId) {
         return false;
       }
-      const sourceAlert = alertById.get(record.alertId);
       if (!sourceAlert || sourceAlert.severity !== severityFilter) {
         return false;
       }
@@ -149,7 +152,7 @@ export default async function ReconciliationPage({
         <p className="app-page-subtitle">
           Alert triage and operator-managed case resolution linked to immutable event history.
         </p>
-        <p className="app-page-meta">As of {formatTimestampWithAge(snapshotAt)}</p>
+        <DataFreshness snapshotAt={snapshotAt} />
         <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
           <div className="app-summary-chip">
             <div className="app-summary-label">Open Cases</div>
@@ -190,12 +193,14 @@ export default async function ReconciliationPage({
             name="q"
             defaultValue={assetQuery}
             placeholder="Alert/case/asset"
+            aria-label="Search by alert, case, or asset"
             className="app-control"
           />
           <select
             name="status"
             defaultValue={statusFilter}
             className="app-control"
+            aria-label="Filter by status"
           >
             <option value="">All statuses</option>
             <option value="open">Open</option>
@@ -205,6 +210,7 @@ export default async function ReconciliationPage({
             name="severity"
             defaultValue={severityFilter}
             className="app-control"
+            aria-label="Filter by severity"
           >
             <option value="">All severities</option>
             <option value="high">High</option>
@@ -215,6 +221,7 @@ export default async function ReconciliationPage({
             name="siteId"
             defaultValue={siteFilter}
             className="app-control"
+            aria-label="Filter by site"
           >
             <option value="">All sites</option>
             {sites.data.map((site) => (
@@ -227,6 +234,7 @@ export default async function ReconciliationPage({
             name="windowHours"
             defaultValue={windowHours ? String(windowHours) : ""}
             className="app-control"
+            aria-label="Filter by time window"
           >
             <option value="">Any time</option>
             <option value="1">Last 1 hour</option>
@@ -312,8 +320,8 @@ export default async function ReconciliationPage({
           back to the stream.
         </p>
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
-          <div className="space-y-3">
-            <OpenCaseForm />
+          <div className="min-w-0 space-y-3">
+            <OpenCaseForm sites={sites.data} />
             <div className="max-h-[26rem] overflow-auto rounded-lg border border-line">
               <table>
                 <thead>
@@ -324,7 +332,7 @@ export default async function ReconciliationPage({
                     <th>Asset</th>
                     <th>Opened By</th>
                     <th>Opened At</th>
-                    <th>Action</th>
+                    <th>Review</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -339,6 +347,7 @@ export default async function ReconciliationPage({
                             <DetailsLink
                               href={caseSelectionHref(record.id)}
                               label={isSelected ? "Selected" : "Select"}
+                              accessibleLabel={`${isSelected ? "Selected" : "Select"} reconciliation case ${record.title}`}
                             />
                           </div>
                         </td>
@@ -351,9 +360,15 @@ export default async function ReconciliationPage({
                         </td>
                         <td>{record.openedBy}</td>
                         <td>{formatTimestampWithAge(record.openedAt)}</td>
-                        <td className="min-w-[16rem]">
+                        <td>
                           {record.status === "open" ? (
-                            <ReconciliationActions caseId={record.id} defaultOperator="ops-supervisor" />
+                            <Link
+                              href={`/reconciliation/${record.id}`}
+                              className="app-pill-action inline-flex"
+                              aria-label={`Review reconciliation case ${record.title}`}
+                            >
+                              Review evidence
+                            </Link>
                           ) : (
                             <span className="text-xs text-fgMuted">
                               Resolved by {record.resolvedBy} ({formatTimestampWithAge(record.resolvedAt)})

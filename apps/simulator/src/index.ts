@@ -1,40 +1,48 @@
-import type { CreateEventRequest } from "@ops/contracts";
+import { buildScenarios, DEFAULT_SITE_IDS, type ScenarioName } from "./scenarios";
+import { validateSimulatorApiBaseUrl } from "./runtime-boundary";
 
-const API_BASE_URL = process.env.API_BASE_URL ?? "http://localhost:4000/api/v1";
+const API_BASE_URL = validateSimulatorApiBaseUrl(
+  process.env.API_BASE_URL ?? "http://127.0.0.1:4000/api/v1"
+);
+const TEST_AUTH_TOKEN = process.env.OPS_TEST_AUTH_TOKEN;
 
-const SITE_IDS = {
-  north: "9f1a3d29-8db1-4d2e-9c7f-4c6e46d5b2a1",
-  central: "c55f6935-40df-4aa7-9f84-5b9c8e5f9a60",
-  coastal: "1b2e7c43-8c9a-4ca4-aef3-27b9a9b28e71"
-} as const;
+if (!API_BASE_URL) {
+  throw new Error("API_BASE_URL must target the allowlisted loopback or Compose test API.");
+}
 
-const ASSET_IDS = {
-  assetD: "27585a6c-10ad-4cb9-a2fd-b194ab613193",
-  assetE: "37adf48f-f6dd-44fb-8f93-9f34af297d6d"
-} as const;
-
-type ScenarioName = "healthy-movement" | "sync-lag-divergence";
-
-type ScenarioDefinition = {
-  name: ScenarioName;
-  description: string;
-  onlineEvents: CreateEventRequest[];
-  offlineReplayBatchId?: string;
-  offlineEvents?: CreateEventRequest[];
-};
+if (!TEST_AUTH_TOKEN || TEST_AUTH_TOKEN.length < 32) {
+  throw new Error(
+    "OPS_TEST_AUTH_TOKEN must be at least 32 characters and supplied at runtime; never store it in source."
+  );
+}
 
 async function post(path: string, payload: unknown): Promise<unknown> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     headers: {
-      "content-type": "application/json"
+      "content-type": "application/json",
+      authorization: `Bearer ${TEST_AUTH_TOKEN}`
     },
     body: JSON.stringify(payload)
   });
 
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`POST ${path} failed: ${response.status} ${body}`);
+    throw new Error(`POST ${path} failed with HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+async function get(path: string): Promise<unknown> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    headers: {
+      accept: "application/json",
+      authorization: `Bearer ${TEST_AUTH_TOKEN}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`GET ${path} failed with HTTP ${response.status}`);
   }
 
   return response.json();
@@ -49,175 +57,60 @@ function resolveScenarioName(): ScenarioName {
   if (raw === "healthy-movement" || raw === "sync-lag-divergence") {
     return raw;
   }
-  return "sync-lag-divergence";
-}
-
-function buildScenarios(now: number): Record<ScenarioName, ScenarioDefinition> {
-  const iso = (minutesAgo: number): string =>
-    new Date(now - 1000 * 60 * minutesAgo).toISOString();
-
-  return {
-    "healthy-movement": {
-      name: "healthy-movement",
-      description: "End-to-end transfer completion with inspection evidence and no replay errors.",
-      onlineEvents: [
-        {
-          eventType: "asset_registered",
-          assetId: ASSET_IDS.assetD,
-          siteId: SITE_IDS.north,
-          transferOrderId: null,
-          occurredAt: iso(30),
-          sourceSiteEventId: "sim-healthy-asset-d-registered",
-          payload: {
-            serialNumber: "SN-OPS-2001",
-            containerId: "CNT-D2",
-            registeredBy: "sim-operator"
-          }
-        },
-        {
-          eventType: "transfer_initiated",
-          assetId: ASSET_IDS.assetD,
-          siteId: SITE_IDS.north,
-          transferOrderId: "5d85d84f-3875-4774-a3f8-7bc5b3944c66",
-          occurredAt: iso(25),
-          sourceSiteEventId: "sim-healthy-transfer-init",
-          payload: {
-            transferOrderId: "5d85d84f-3875-4774-a3f8-7bc5b3944c66",
-            originSiteId: SITE_IDS.north,
-            destinationSiteId: SITE_IDS.coastal,
-            initiatedBy: "north-shift-a"
-          }
-        },
-        {
-          eventType: "asset_moved",
-          assetId: ASSET_IDS.assetD,
-          siteId: SITE_IDS.north,
-          transferOrderId: "5d85d84f-3875-4774-a3f8-7bc5b3944c66",
-          occurredAt: iso(24),
-          sourceSiteEventId: "sim-healthy-transfer-moved",
-          payload: {
-            fromSiteId: SITE_IDS.north,
-            toSiteId: SITE_IDS.coastal,
-            reason: "Scheduled movement"
-          }
-        },
-        {
-          eventType: "asset_received",
-          assetId: ASSET_IDS.assetD,
-          siteId: SITE_IDS.coastal,
-          transferOrderId: "5d85d84f-3875-4774-a3f8-7bc5b3944c66",
-          occurredAt: iso(20),
-          sourceSiteEventId: "sim-healthy-transfer-received",
-          payload: {
-            fromSiteId: SITE_IDS.north,
-            condition: "ok",
-            receivedBy: "coastal-shift-c"
-          }
-        },
-        {
-          eventType: "transfer_completed",
-          assetId: ASSET_IDS.assetD,
-          siteId: SITE_IDS.coastal,
-          transferOrderId: "5d85d84f-3875-4774-a3f8-7bc5b3944c66",
-          occurredAt: iso(18),
-          sourceSiteEventId: "sim-healthy-transfer-complete",
-          payload: {
-            transferOrderId: "5d85d84f-3875-4774-a3f8-7bc5b3944c66",
-            completedBy: "coastal-shift-c",
-            completionNote: "Arrival confirmed"
-          }
-        }
-      ]
-    },
-    "sync-lag-divergence": {
-      name: "sync-lag-divergence",
-      description:
-        "Mixed online/offline flow with replay submission and divergence scan for operational drift.",
-      onlineEvents: [
-        {
-          eventType: "asset_registered",
-          assetId: ASSET_IDS.assetE,
-          siteId: SITE_IDS.central,
-          transferOrderId: null,
-          occurredAt: iso(30),
-          sourceSiteEventId: "sim-drift-asset-e-registered",
-          payload: {
-            serialNumber: "SN-OPS-2002",
-            containerId: "CNT-E2",
-            registeredBy: "sim-operator"
-          }
-        },
-        {
-          eventType: "inspection_recorded",
-          assetId: ASSET_IDS.assetE,
-          siteId: SITE_IDS.central,
-          transferOrderId: null,
-          occurredAt: iso(24),
-          sourceSiteEventId: "sim-drift-inspection-e",
-          payload: {
-            inspectionId: "de55347f-a98b-44a0-9988-eb0d3e4f1985",
-            status: "review",
-            notes: "Evidence pending while site queue is delayed."
-          }
-        }
-      ],
-      offlineReplayBatchId: "af8a07a4-a71b-4a55-9c0f-5060cf149318",
-      offlineEvents: [
-        {
-          eventType: "asset_received",
-          assetId: ASSET_IDS.assetE,
-          siteId: SITE_IDS.coastal,
-          transferOrderId: null,
-          occurredAt: iso(10),
-          sourceSiteEventId: "sim-drift-offline-received-e",
-          payload: {
-            fromSiteId: SITE_IDS.central,
-            condition: "ok",
-            receivedBy: "coastal-shift-c"
-          }
-        },
-        {
-          eventType: "inspection_recorded",
-          assetId: ASSET_IDS.assetE,
-          siteId: SITE_IDS.coastal,
-          transferOrderId: null,
-          occurredAt: iso(9),
-          sourceSiteEventId: "sim-drift-offline-inspection-e",
-          payload: {
-            inspectionId: "314c5a28-fac0-4c54-bd91-0cd22f5668a2",
-            status: "review",
-            notes: "Offline inspection replayed."
-          }
-        }
-      ]
-    }
-  };
+  throw new Error(
+    "Unknown simulator scenario. Use healthy-movement or sync-lag-divergence."
+  );
 }
 
 async function run(): Promise<void> {
-  const now = Date.now();
   const scenarioName = resolveScenarioName();
-  const scenarios = buildScenarios(now);
+  const scenarios = buildScenarios();
   const scenario = scenarios[scenarioName];
 
   // eslint-disable-next-line no-console
   console.log(`Running simulator scenario: ${scenario.name}`);
   // eslint-disable-next-line no-console
   console.log(scenario.description);
+  // eslint-disable-next-line no-console
+  console.log(`Scenario run bucket: ${scenario.runId}`);
 
   for (const event of scenario.onlineEvents) {
     await post("/events", event);
   }
 
   if (scenario.offlineReplayBatchId && scenario.offlineEvents && scenario.offlineEvents.length > 0) {
-    await post("/sync/replay", {
-      siteId: SITE_IDS.coastal,
+    const replay = await post("/sync/replay", {
+      siteId: DEFAULT_SITE_IDS.coastal,
       syncBatchId: scenario.offlineReplayBatchId,
       events: scenario.offlineEvents
     });
+    const replayStatus = (replay as { data?: { status?: unknown } }).data?.status;
+    if (scenario.expectedReplayStatus && replayStatus !== scenario.expectedReplayStatus) {
+      throw new Error(
+        `Scenario expected replay status ${scenario.expectedReplayStatus}, received ${String(replayStatus)}`
+      );
+    }
   }
 
   const divergence = await post("/divergence/scan", {});
+  if (scenario.expectedAlert) {
+    const alertResponse = await get("/alerts");
+    const alertRows = (alertResponse as { data?: unknown }).data;
+    const found =
+      Array.isArray(alertRows) &&
+      alertRows.some(
+        (row) =>
+          typeof row === "object" &&
+          row !== null &&
+          (row as { ruleCode?: unknown }).ruleCode === scenario.expectedAlert?.ruleCode &&
+          (row as { assetId?: unknown }).assetId === scenario.expectedAlert?.assetId
+      );
+    if (!found) {
+      throw new Error(
+        `Scenario did not produce ${scenario.expectedAlert.ruleCode} for ${scenario.expectedAlert.assetId}`
+      );
+    }
+  }
   // eslint-disable-next-line no-console
   console.log("Simulation completed", divergence);
 }

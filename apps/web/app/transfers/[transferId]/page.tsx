@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { CopyValue } from "../../../components/copy-value";
 import { EventInspector } from "../../../components/event-inspector";
 import { StatusBadge } from "../../../components/status-badge";
-import { fetchJson } from "../../../lib/api";
+import { fetchJson, isApiNotFound } from "../../../lib/api";
 import {
   formatCodeLabel,
   formatTimestampWithAge,
@@ -96,8 +96,11 @@ export default async function TransferDetailPage({
 
   try {
     details = await fetchJson<TransferDetailsResponse>(`/transfers/${transferId}`);
-  } catch {
-    notFound();
+  } catch (error) {
+    if (isApiNotFound(error)) {
+      notFound();
+    }
+    throw error;
   }
 
   const transfer = details.data.transfer;

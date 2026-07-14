@@ -6,7 +6,7 @@ A clean-room reference implementation showing how multi-site operations detect, 
 
 The system models sites that can work independently, reconnect later, replay queued events, and disagree about asset location, transfer status, evidence, or projected state. It turns those disagreements into explicit operator work instead of hiding them in mutable records.
 
-[Mike Holton's portfolio](https://haldn.com/mike) | [GitHub profile](https://github.com/mholton-ops) | [Safety boundaries](docs/non-goals-and-safety-boundaries.md)
+[Mike Holton's portfolio](https://haldn.com/mike) | [GitHub profile](https://github.com/mholton-ops) | [Hardening audit](docs/hardening-audit-2026-07-13.md) | [Safety boundaries](docs/non-goals-and-safety-boundaries.md)
 
 ## Why This Matters
 
@@ -28,10 +28,25 @@ This platform preserves accepted history, derives current state deterministicall
 | Immutable operating history | Append-only event log with normalized event inspection |
 | Current-state performance | Deterministic asset projections derived from accepted events |
 | Offline and delayed sync | Replay batches with accepted, rejected, and deduplicated outcomes |
-| Idempotency | Source-site event identity prevents duplicate application |
+| Idempotency | Source-site identity plus a canonical event hash deduplicates exact retries and rejects key reuse with different content |
 | Drift detection | Rules for stale sites, missing evidence, overdue transfers, conflicting observations, and projection lag |
-| Human control | Alerts become owned reconciliation cases with event-backed resolution |
+| Human control | Alerts become versioned reconciliation cases with event-backed, concurrency-safe resolution |
 | Traceability | Asset, transfer, sync, inspection, alert, and case views remain linked |
+| Test access boundary | Versioned API routes require a server-held bearer token; browser mutations stay same-origin |
+
+## Operator Workbench Screenshots
+
+The captured workbench uses deterministic synthetic test data on the loopback-only stack. Click an image for the full-size view, or browse the [complete desktop, dark-mode, detail, and mobile gallery](docs/images/README.md).
+
+| Operational dashboard | Asset investigation |
+| --- | --- |
+| [![Operational dashboard showing policy, scenario, and system posture](docs/images/dashboard-view.jpg)](docs/images/dashboard-view.jpg) | [![Asset projection and divergence signals](docs/images/asset-detail-view.jpg)](docs/images/asset-detail-view.jpg) |
+
+| Dark-mode dashboard | Reconciliation case |
+| --- | --- |
+| [![Operational dashboard in dark mode](docs/images/dashboard-view-dark.jpg)](docs/images/dashboard-view-dark.jpg) | [![Reconciliation case context and source alert](docs/images/reconciliation-case-detail-view.jpg)](docs/images/reconciliation-case-detail-view.jpg) |
+
+Responsive captures are available for the [dashboard](docs/images/dashboard-mobile-view.jpg), [asset inventory](docs/images/assets-mobile-view.jpg), and [reconciliation workbench](docs/images/reconciliation-mobile-view.jpg). The gallery also includes the [asset inventory](docs/images/assets-view.jpg), [reconciliation overview](docs/images/reconciliation-view.jpg), and [sync replay diagnostics](docs/images/sync-batch-detail-view.jpg).
 
 ## Architecture at a Glance
 
@@ -62,7 +77,7 @@ flowchart LR
 The deterministic seed creates a mixed operating state:
 
 1. Twelve assets are registered across three sites.
-2. Ten transfers are created; two remain unconfirmed beyond policy threshold.
+2. Eleven transfers are created; three remain unconfirmed beyond policy threshold.
 3. Conflicting site observations generate alerts.
 4. Two inspections intentionally lack evidence metadata.
 5. A replay batch includes a duplicate source event to demonstrate idempotent handling.
@@ -94,64 +109,112 @@ See [Architecture](docs/architecture.md), [Domain Model](docs/domain-model.md), 
 - Deterministic projection and divergence packages
 - Replay and delay simulator
 - Seeded scenarios plus unit and end-to-end tests
+- Node.js 24 with a locked npm toolchain
 
-## Run Locally
+## Run the Test Stack
 
 Prerequisites:
 
 - Docker and Docker Compose
-- Node.js 20+
+- Node.js 24 and npm 11 for host-side checks
+- Distinct `POSTGRES_ADMIN_PASSWORD` and `OPS_TEST_DB_PASSWORD` values of at least 24 characters supplied to the current process through approved secret plumbing
+- An explicit non-secret `OPS_TEST_ACTOR` audit label
 
-~~~bash
-cp .env.example .env
-docker compose up --build -d
-docker compose exec api npm run db:migrate
-docker compose exec api npm run seed
+The supported stack is local testing only. PostgreSQL, API, and web ports publish to `127.0.0.1`; no public or IIS deployment is included. The bootstrap script generates a runtime-only API test token when one is not already supplied. It never prints the token or either database password.
+
+The image bootstrap administrator is separate from the `ops_test` app/migration role. `ops_test` is restricted from superuser, database creation, role creation, replication, row-security bypass, database-level object creation, and inherited role memberships. Runtime and migration preflights fail closed unless that exact role boundary and the canonical `ops_control_test` target are present. The workbench accepts only the canonical loopback browser origin and forwards its server-held bearer only to the allowlisted loopback/Compose API target. Override `OPS_TEST_WEB_ORIGIN` only when intentionally using a different loopback web port.
+
+From PowerShell, after populating both database passwords in the current process:
+
+~~~powershell
+$env:OPS_TEST_ACTOR = "local-test-operator"
+.\bootstrap-local.ps1 -Build -SeedDemoData -ConfirmDatabase ops_control_test
 ~~~
 
 Endpoints:
 
-- Operator workbench: http://localhost:3000
-- API health: http://localhost:4000/health
-- Dashboard API: http://localhost:4000/api/v1/dashboard
+- Operator workbench: `http://127.0.0.1:3000`
+- API liveness: `http://127.0.0.1:4000/health`
+- API readiness: `http://127.0.0.1:4000/ready`
+- Authenticated dashboard API: `http://127.0.0.1:4000/api/v1/dashboard`
+
+Stop the stack without deleting the database volume:
+
+~~~powershell
+.\bootstrap-local.ps1 -Stop
+~~~
+
+Resetting test data is destructive and requires the exact database confirmation:
+
+~~~powershell
+.\bootstrap-local.ps1 -ResetTestData -ConfirmDatabase ops_control_test
+~~~
+
+The named PostgreSQL volume survives normal service restarts. Reuse the same two vault-backed database passwords while that volume exists, or explicitly reset the test volume. A volume created before the split-role boundary must be reset with the confirmed `-ResetTestData` workflow; the health and migration checks intentionally reject the former superuser-style `ops_test` role.
+
+Confirmed demo seeding is intentionally destructive inside `ops_control_test`: it clears and rebuilds the synthetic domain tables while preserving migration history. Do not point the guarded seed command at retained or non-test data.
 
 Run the simulator:
 
-~~~bash
-npm run start --workspace apps/simulator
+The simulator must use the same caller-supplied `OPS_TEST_AUTH_TOKEN` as the API. Load a value of at least 32 characters from approved secret plumbing before starting the stack; a token generated automatically by the bootstrap is intentionally discarded from the caller's shell and cannot be reused by the simulator.
+
+~~~powershell
+.\scripts\run-simulator.ps1 -Scenario healthy-movement
 ~~~
+
+The simulator requires `OPS_TEST_AUTH_TOKEN` in its server process and defaults to the loopback API. It never receives the token through browser-visible configuration.
 
 Available deterministic scenarios:
 
-~~~bash
-SIM_SCENARIO=healthy-movement npm run start --workspace apps/simulator
-SIM_SCENARIO=sync-lag-divergence npm run start --workspace apps/simulator
+~~~powershell
+$env:SIM_SCENARIO = "healthy-movement"
+npm run start --workspace apps/simulator
+
+$env:SIM_SCENARIO = "sync-lag-divergence"
+npm run start --workspace apps/simulator
 ~~~
+
+Scenario identities and timestamps are stable within a 30-minute run bucket: an immediate rerun is an exact idempotent retry, while later buckets remain inside the live divergence window without reusing old payload identities. `healthy-movement` completes a transfer with inspection evidence. `sync-lag-divergence` deliberately creates a partial replay, a stale-site condition, and conflicting current-window observations, then fails the run if the expected dual-site alert is absent.
 
 ## Verification
 
-The GitHub Actions gate performs a locked clean install, deterministic package and application builds, domain and API tests, and a production-dependency audit:
+The main verification gate performs a clean topological build, lint, every workspace typecheck, domain and API tests, and a compiled production-start smoke:
 
 ~~~bash
 npm ci --no-audit --no-fund
 npm run verify
-npm audit --omit=dev --audit-level=high
+npm run audit
 ~~~
 
-The full-stack browser suite remains available when the Docker services are running:
+With the guarded PostgreSQL test database migrated and seeded, the browser suite exercises real persistence, same-origin mutations, 390px overflow, navigation state, and automated WCAG A/AA checks:
 
-~~~bash
+Populate `DATABASE_URL`, `OPS_TEST_AUTH_TOKEN`, and `OPS_TEST_ACTOR` in the current process through approved runtime secret plumbing, then run the complete host-side database/browser sequence from PowerShell:
+
+~~~powershell
+npm run build
+npm run db:migrate
+$env:OPS_RUN_DB_INTEGRATION = "1"
+npm run test:integration
+Remove-Item Env:OPS_RUN_DB_INTEGRATION
+$env:OPS_ALLOW_DEMO_SEED = "ops_control_test"
+npm run db:seed
+Remove-Item Env:OPS_ALLOW_DEMO_SEED
 npm run test:e2e
 ~~~
+
+CI additionally starts the composed non-root runtime images, waits for database-backed readiness, and checks both the loopback UI and an authenticated API request. See [Test Security Model](docs/test-security-model.md) and [API Reference](docs/api-reference.md) for the exact boundary.
 
 High-value tests cover:
 
 - replay idempotency
+- replay payload-key conflicts and durable per-event outcomes
 - projection update correctness
+- transactional rollback and same-asset concurrency ordering
 - stale-site detection
 - overdue transfer confirmation
 - inspection evidence gaps
-- reconciliation resolution events
+- reconciliation version conflicts and resolution events
+- API authentication and database readiness
 
 ## Repository Map
 
@@ -169,6 +232,8 @@ docs/
   architecture.md
   domain-model.md
   event-model.md
+  hardening-audit-2026-07-13.md
+  test-security-model.md
   non-goals-and-safety-boundaries.md
 ~~~
 
@@ -189,8 +254,8 @@ docs/
 - **A single relational database** keeps the public reference deterministic while still modeling multi-site drift.
 - **Operator-focused interfaces** prioritize investigation and control over decorative dashboards.
 
-## Public-Safe Boundary
+## Public-Safe, Test-Only Boundary
 
-This repository is original and public-safe. It intentionally omits proprietary schemas, customer data, protected workflow details, production authentication, binary evidence storage, and private integrations.
+This repository is original and public-safe. It intentionally omits proprietary schemas, customer data, protected workflow details, production identity/authorization, binary evidence storage, private infrastructure, and private integrations.
 
-It demonstrates the control pattern and implementation depth without claiming to be a production deployment.
+It demonstrates the control pattern and implementation depth without claiming to be a production deployment. Runtime credentials are never committed, and the supported host listeners are loopback-only.

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { fetchJson } from "../../lib/api";
 import { CopyValue } from "../../components/copy-value";
+import { DataFreshness } from "../../components/data-freshness";
 import { DetailsLink } from "../../components/details-link";
 import { StatusBadge } from "../../components/status-badge";
 import { formatTimestampWithAge, shortId } from "../../lib/format";
@@ -89,7 +90,7 @@ export default async function SyncBatchesPage({
         <p className="app-page-subtitle">
           Batch replay outcomes with queued, accepted, and rejected event counts per site submission.
         </p>
-        <p className="app-page-meta">As of {formatTimestampWithAge(snapshotAt)}</p>
+        <DataFreshness snapshotAt={snapshotAt} />
         <div className="grid gap-3 md:grid-cols-5">
           <div className="app-summary-chip">
             <div className="app-summary-label">Filtered Batches</div>
@@ -127,12 +128,14 @@ export default async function SyncBatchesPage({
             name="q"
             defaultValue={query}
             placeholder="Batch ID or site ID"
+            aria-label="Search by sync batch or site ID"
             className="app-control"
           />
           <select
             name="status"
             defaultValue={statusFilter}
             className="app-control"
+            aria-label="Filter by sync batch status"
           >
             <option value="">All statuses</option>
             <option value="started">Started</option>
@@ -142,6 +145,7 @@ export default async function SyncBatchesPage({
             name="siteId"
             defaultValue={siteFilter}
             className="app-control"
+            aria-label="Filter sync batches by site"
           >
             <option value="">All sites</option>
             {sites.data.map((site) => (
@@ -154,6 +158,7 @@ export default async function SyncBatchesPage({
             name="windowHours"
             defaultValue={windowHours ? String(windowHours) : ""}
             className="app-control"
+            aria-label="Filter sync batches by start time"
           >
             <option value="">Any time</option>
             <option value="1">Last 1 hour</option>
@@ -190,7 +195,7 @@ export default async function SyncBatchesPage({
                   <th>Started</th>
                   <th>Completed</th>
                   <th>Queued</th>
-                  <th>Accepted</th>
+                  <th>Accepted (incl. dedup)</th>
                   <th>Rejected</th>
                 </tr>
               </thead>
@@ -206,6 +211,7 @@ export default async function SyncBatchesPage({
                           <DetailsLink
                             href={selectionHref(batch.id)}
                             label={isSelected ? "Selected" : "Select"}
+                            accessibleLabel={`${isSelected ? "Selected" : "Select"} sync batch ${shortId(batch.id, 10)}`}
                           />
                         </div>
                       </td>
@@ -266,7 +272,7 @@ export default async function SyncBatchesPage({
               <div>
                 <div className="app-selection-label">Replay Counts</div>
                 <div className="app-selection-value">
-                  queued {selectedBatch.queuedEventCount} / accepted {selectedBatch.acceptedEventCount} /
+                  queued {selectedBatch.queuedEventCount} / accepted incl. dedup {selectedBatch.acceptedEventCount} /
                   rejected {selectedBatch.rejectedEventCount}
                 </div>
               </div>

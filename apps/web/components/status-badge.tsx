@@ -21,17 +21,28 @@ export function StatusBadge({ value }: { value: Severity }) {
     medium: "border-warning/80 text-warning",
     low: "border-sky-600/70 text-sky-700",
     open: "border-warning/80 text-warning",
+    acknowledged: "border-sky-600/70 text-sky-700",
     resolved: "border-success/80 text-success",
     healthy: "border-success/80 text-success",
     stale: "border-critical/80 text-critical",
     degraded: "border-warning/80 text-warning",
     in_transit: "border-sky-600/70 text-sky-700",
+    registered: "border-success/80 text-success",
     under_inspection: "border-warning/80 text-warning",
     reconciliation_required: "border-critical/80 text-critical",
     at_site: "border-success/80 text-success",
     initiated: "border-sky-600/70 text-sky-700",
     started: "border-warning/80 text-warning",
-    completed: "border-success/80 text-success"
+    processing: "border-warning/80 text-warning",
+    partial: "border-warning/80 text-warning",
+    failed: "border-critical/80 text-critical",
+    completed: "border-success/80 text-success",
+    pass: "border-success/80 text-success",
+    fail: "border-critical/80 text-critical",
+    review: "border-warning/80 text-warning",
+    accepted: "border-success/80 text-success",
+    deduplicated: "border-sky-600/70 text-sky-700",
+    rejected: "border-critical/80 text-critical"
   }[value];
 
   return (

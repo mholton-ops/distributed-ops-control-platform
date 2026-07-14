@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { EventInspector } from "../../../components/event-inspector";
 import { StatusBadge } from "../../../components/status-badge";
-import { fetchJson } from "../../../lib/api";
+import { fetchJson, isApiNotFound } from "../../../lib/api";
 import {
   formatCodeLabel,
   formatTimestampWithAge,
@@ -45,6 +45,7 @@ type SiteDetailsResponse = {
       status: string;
       summary: string;
       detected_at: string;
+      last_detected_at: string;
     }>;
     recentEvents: Array<{
       id: string;
@@ -70,8 +71,11 @@ export default async function SiteDetailPage({
 
   try {
     details = await fetchJson<SiteDetailsResponse>(`/sites/${siteId}`);
-  } catch {
-    notFound();
+  } catch (error) {
+    if (isApiNotFound(error)) {
+      notFound();
+    }
+    throw error;
   }
 
   const site = details.data.site;
@@ -193,7 +197,7 @@ export default async function SiteDetailPage({
                 <th>Severity</th>
                 <th>Status</th>
                 <th>Summary</th>
-                <th>Detected</th>
+                <th>Last Detected</th>
               </tr>
             </thead>
             <tbody>
@@ -208,7 +212,7 @@ export default async function SiteDetailPage({
                     <StatusBadge value={alert.status} />
                   </td>
                   <td>{alert.summary}</td>
-                  <td>{formatTimestampWithAge(alert.detected_at)}</td>
+                  <td>{formatTimestampWithAge(alert.last_detected_at)}</td>
                 </tr>
               ))}
             </tbody>

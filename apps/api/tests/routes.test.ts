@@ -1,10 +1,18 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+const testSecurity = vi.hoisted(() => {
+  const token = `vitest-${crypto.randomUUID()}-${crypto.randomUUID()}`;
+  process.env.OPS_TEST_AUTH_TOKEN = token;
+  process.env.OPS_TEST_ACTOR = "vitest-operator";
+  return { token };
+});
+
 vi.mock("../src/domain/event-service", () => ({
   ingestEvent: vi.fn(async () => ({
     eventId: "dc1e5f53-22ec-4593-9e7f-77e83ccf4f74",
     sequenceNumber: 42,
-    deduplicated: false
+    deduplicated: false,
+    eventHash: "a".repeat(64)
   })),
   ingestSyncReplay: vi.fn(async () => ({
     syncBatchId: "cb16f437-d84e-4f7e-a3b8-66c4f7376d1d",
@@ -36,6 +44,12 @@ vi.mock("../src/domain/query-service", () => ({
     replaySuccessCount: 4,
     replayFailureCount: 0,
     unresolvedEvidenceGaps: 1
+    ,openHighSeverityAlerts: 1,
+    openTransferTimeoutAlerts: 1,
+    openDualSiteAlerts: 0,
+    openProjectionLagAlerts: 0,
+    openEvidenceGapAlerts: 1,
+    openStaleSiteAlerts: 1
   })),
   recentTransfers: vi.fn(async () => []),
   recentAlerts: vi.fn(async () => []),
@@ -46,9 +60,11 @@ vi.mock("../src/domain/query-service", () => ({
 
 import { buildServer } from "../src/app";
 import { closeDatabase } from "../src/db/client";
+import { dashboardSummary } from "../src/domain/query-service";
 
 describe("api routes", () => {
   const app = buildServer();
+  const authorization = { authorization: `Bearer ${testSecurity.token}` };
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -70,6 +86,7 @@ describe("api routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/events",
+      headers: authorization,
       payload: {
         eventType: "asset_registered",
         assetId: "7b4b2d2f-88fb-4d8d-931a-6a5645f1e7c2",
@@ -93,6 +110,7 @@ describe("api routes", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/events",
+      headers: authorization,
       payload: {
         eventType: "asset_registered",
         assetId: "7b4b2d2f-88fb-4d8d-931a-6a5645f1e7c2",
@@ -110,8 +128,51 @@ describe("api routes", () => {
   });
 
   it("returns dashboard aggregate data", async () => {
-    const response = await app.inject({ method: "GET", url: "/api/v1/dashboard" });
+    const response = await app.inject({ method: "GET", url: "/api/v1/dashboard", headers: authorization });
     expect(response.statusCode).toBe(200);
     expect(response.json().data.summary.openReconciliationCases).toBe(1);
+  });
+
+  it("requires authentication for API and metrics routes", async () => {
+    expect((await app.inject({ method: "GET", url: "/api/v1/dashboard" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/metrics" })).statusCode).toBe(401);
+    expect(vi.mocked(dashboardSummary)).not.toHaveBeenCalled();
+  });
+
+  it("rejects replay payloads above the synchronous hard cap", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/sync/replay",
+      headers: authorization,
+      payload: {
+        siteId: "9f1a3d29-8db1-4d2e-9c7f-4c6e46d5b2a1",
+        syncBatchId: "cb16f437-d84e-4f7e-a3b8-66c4f7376d1d",
+        events: Array.from({ length: 501 }, () => ({}))
+      }
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe("REQUEST_VALIDATION_FAILED");
+  });
+
+  it("rejects internal event types on the generic event endpoint", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/events",
+      headers: authorization,
+      payload: {
+        eventType: "site_sync_started",
+        assetId: null,
+        siteId: "9f1a3d29-8db1-4d2e-9c7f-4c6e46d5b2a1",
+        transferOrderId: null,
+        occurredAt: new Date().toISOString(),
+        sourceSiteEventId: "forbidden-internal-event",
+        payload: {
+          syncBatchId: "cb16f437-d84e-4f7e-a3b8-66c4f7376d1d",
+          queuedEventCount: 0
+        }
+      }
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error.code).toBe("INTERNAL_EVENT_FORBIDDEN");
   });
 });

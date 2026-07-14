@@ -2,8 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { CopyValue } from "../../../components/copy-value";
 import { EventInspector } from "../../../components/event-inspector";
+import { ReconciliationActions } from "../../../components/reconciliation-actions";
 import { StatusBadge } from "../../../components/status-badge";
-import { fetchJson } from "../../../lib/api";
+import { fetchJson, isApiNotFound } from "../../../lib/api";
 import {
   formatCodeLabel,
   formatTimestampWithAge,
@@ -26,6 +27,7 @@ type CaseDetailsResponse = {
       resolvedBy: string | null;
       resolvedAt: string | null;
       resolutionSummary: string | null;
+      version: number;
     };
     sourceAlert: {
       id: string;
@@ -106,14 +108,22 @@ export default async function ReconciliationCaseDetailPage({
 
   try {
     details = await fetchJson<CaseDetailsResponse>(`/reconciliation-cases/${caseId}`);
-  } catch {
-    notFound();
+  } catch (error) {
+    if (isApiNotFound(error)) {
+      notFound();
+    }
+    throw error;
   }
 
   const record = details.data.case;
 
   return (
     <div className="space-y-4">
+      <nav aria-label="Breadcrumb" className="text-sm text-fgMuted">
+        <Link href="/reconciliation">Reconciliation</Link>
+        <span aria-hidden="true"> / </span>
+        <span aria-current="page">Case {shortId(record.id, 10)}</span>
+      </nav>
       <section className="rounded-lg border border-line bg-panel p-4">
         <h2 className="mb-1 text-lg font-semibold">Reconciliation Case Detail</h2>
         <p className="mb-3 text-xs text-fgMuted">
@@ -203,6 +213,17 @@ export default async function ReconciliationCaseDetailPage({
               <div className="text-xs text-fgMuted">Summary</div>
               <div>{details.data.sourceAlert.summary}</div>
             </div>
+            {Object.entries(details.data.sourceAlert.details)
+              .filter(([, value]) =>
+                typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+              )
+              .slice(0, 8)
+              .map(([key, value]) => (
+                <div key={key}>
+                  <div className="text-xs text-fgMuted">{formatCodeLabel(key)}</div>
+                  <div className="break-words text-sm">{String(value)}</div>
+                </div>
+              ))}
             <div className="md:col-span-4">
               <div className="text-xs text-fgMuted">Alert Link</div>
               <div className="flex items-center gap-2">
@@ -415,6 +436,21 @@ export default async function ReconciliationCaseDetailPage({
           </table>
         </div>
       </section>
+
+      {record.status === "open" ? (
+        <section className="rounded-lg border border-line bg-panel p-4">
+          <h3 className="app-section-title">Resolve after evidence review</h3>
+          <p className="app-section-subtitle mb-4">
+            Resolution is test-only and writes an auditable closing event. Verify the evidence shown
+            above before confirming.
+          </p>
+          <ReconciliationActions
+            caseId={record.id}
+            expectedVersion={record.version}
+            hasAsset={Boolean(record.assetId)}
+          />
+        </section>
+      ) : null}
     </div>
   );
 }

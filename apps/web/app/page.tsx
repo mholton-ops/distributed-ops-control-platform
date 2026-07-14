@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { DataFreshness } from "../components/data-freshness";
 import { StatusBadge } from "../components/status-badge";
 import { fetchJson } from "../lib/api";
 import { formatCodeLabel, formatTimestampWithAge } from "../lib/format";
@@ -13,6 +14,17 @@ type DashboardResponse = {
       replaySuccessCount: number;
       replayFailureCount: number;
       unresolvedEvidenceGaps: number;
+      openHighSeverityAlerts: number;
+      openTransferTimeoutAlerts: number;
+      openDualSiteAlerts: number;
+      openProjectionLagAlerts: number;
+      openEvidenceGapAlerts: number;
+      openStaleSiteAlerts: number;
+    };
+    policy: {
+      syncStaleMinutes: number;
+      transferConfirmationHours: number;
+      dualSiteObservationMinutes: number;
     };
     recentTransfers: Array<Record<string, unknown>>;
     recentAlerts: Array<Record<string, unknown>>;
@@ -52,8 +64,6 @@ export default async function HomePage() {
   const scenarioLabel =
     process.env.NEXT_PUBLIC_SCENARIO_LABEL ??
     "sync lag + conflicting observations + missing evidence";
-  const syncStaleMinutes = process.env.NEXT_PUBLIC_SYNC_STALE_MINUTES ?? "45";
-  const transferConfirmationHours = process.env.NEXT_PUBLIC_TRANSFER_CONFIRMATION_HOURS ?? "4";
 
   const healthySites = sites.data.filter((site) => site.syncPosture === "healthy").length;
   const degradedSites = sites.data.filter((site) => site.syncPosture === "degraded").length;
@@ -62,13 +72,17 @@ export default async function HomePage() {
 
   const recentAlerts = dashboard.data.recentAlerts as Array<{
     severity?: string;
+    status?: string;
     detectedAt?: string;
+    lastDetectedAt?: string;
   }>;
   const recentTransfers = dashboard.data.recentTransfers as Array<{
     status?: string;
   }>;
 
-  const highAlerts = recentAlerts.filter((alert) => String(alert.severity ?? "") === "high").length;
+  const highAlerts = recentAlerts.filter(
+    (alert) => String(alert.severity ?? "") === "high"
+  ).length;
   const mediumAlerts = recentAlerts.filter((alert) => String(alert.severity ?? "") === "medium").length;
   const lowAlerts = recentAlerts.filter((alert) => String(alert.severity ?? "") === "low").length;
   const initiatedTransfers = recentTransfers.filter(
@@ -82,18 +96,26 @@ export default async function HomePage() {
   const replayAccepted = dashboard.data.summary.replaySuccessCount;
   const replayRejected = dashboard.data.summary.replayFailureCount;
   const replayTotal = Math.max(1, replayAccepted + replayRejected);
+  const openHighSeverityAlerts = dashboard.data.summary.openHighSeverityAlerts ?? 0;
+  const openCriticalConditionAlerts =
+    (dashboard.data.summary.openStaleSiteAlerts ?? 0) +
+    (dashboard.data.summary.openDualSiteAlerts ?? 0) +
+    (dashboard.data.summary.openProjectionLagAlerts ?? 0);
+  const openWarningConditionAlerts =
+    (dashboard.data.summary.openTransferTimeoutAlerts ?? 0) +
+    (dashboard.data.summary.openEvidenceGapAlerts ?? 0);
 
   const globalStatus: { label: string; detail: string; tone: StatusTone } =
-    staleSites > 0 || highAlerts > 0 || replayRejected > 0
+    openHighSeverityAlerts > 0 || openCriticalConditionAlerts > 0 || replayRejected > 0
       ? {
           label: "Attention Required",
-          detail: "One or more sites are stale or high-severity alerts are active.",
+          detail: `${String(openHighSeverityAlerts)} open high-severity alert(s), ${String(openCriticalConditionAlerts)} open integrity condition(s), and ${String(replayRejected)} rejected replay event(s).`,
           tone: "critical"
         }
-      : degradedSites > 0 || mediumAlerts > 0
+      : degradedSites > 0 || openWarningConditionAlerts > 0
         ? {
             label: "Monitor",
-            detail: "System is operating with moderate risk signals that should be watched.",
+            detail: `${String(openWarningConditionAlerts)} open transfer/evidence condition(s) require monitoring.`,
             tone: "warning"
           }
         : {
@@ -144,16 +166,27 @@ export default async function HomePage() {
       <section className="grid items-stretch gap-4 lg:grid-cols-[22rem_minmax(0,1fr)_20rem]">
         <article className="app-card h-full">
           <h2 className="app-section-title">Operational Policy</h2>
-          <p className="app-section-subtitle">As of {formatTimestampWithAge(snapshotAt)}</p>
+          <DataFreshness snapshotAt={snapshotAt} />
           <div className="mt-3 space-y-1 text-sm text-fgMuted">
             <p>
-              Site is stale after <span className="font-semibold text-fg">{syncStaleMinutes} minutes</span>{" "}
+              Site is stale after{" "}
+              <span className="font-semibold text-fg">
+                {dashboard.data.policy.syncStaleMinutes} minutes
+              </span>{" "}
               without completed sync.
             </p>
             <p>
               Transfer is overdue after{" "}
-              <span className="font-semibold text-fg">{transferConfirmationHours} hours</span>{" "}
+              <span className="font-semibold text-fg">
+                {dashboard.data.policy.transferConfirmationHours} hours
+              </span>{" "}
               without confirmation.
+            </p>
+            <p>
+              Conflicting observations are compared within{" "}
+              <span className="font-semibold text-fg">
+                {dashboard.data.policy.dualSiteObservationMinutes} minutes
+              </span>.
             </p>
           </div>
         </article>
@@ -217,7 +250,9 @@ export default async function HomePage() {
                 <div className="h-2 rounded-full border border-line bg-panelMuted">
                   <div
                     className={`h-full rounded-full ${bar.className}`}
-                    style={{ width: `${Math.max(8, (bar.value / maxAlertBarValue) * 100)}%` }}
+                    style={{ width: `${bar.value === 0 ? 0 : (bar.value / maxAlertBarValue) * 100}%` }}
+                    role="img"
+                    aria-label={`${bar.label} alerts: ${String(bar.value)}`}
                   />
                 </div>
               </div>
@@ -231,7 +266,7 @@ export default async function HomePage() {
           <div className="mt-4 space-y-4">
             <div>
               <div className="mb-1 flex items-center justify-between text-xs text-fgMuted">
-                <span>Replay acceptance</span>
+                <span>Replay acceptance (including deduplicated)</span>
                 <span className="font-semibold text-fg">
                   {replayAccepted} accepted / {replayRejected} rejected
                 </span>
@@ -331,7 +366,7 @@ export default async function HomePage() {
                 </div>
                 <div className="mt-1 text-xs text-fgMuted">Rule: {formatCodeLabel(String(alert.ruleCode))}</div>
                 <div className="mt-1 text-xs text-fgMuted">
-                  Detected {formatTimestampWithAge(String(alert.detectedAt ?? ""))}
+                  Last detected {formatTimestampWithAge(String(alert.lastDetectedAt ?? alert.detectedAt ?? ""))}
                 </div>
                 <Link
                   href={`/reconciliation?q=${encodeURIComponent(String(alert.id))}`}
@@ -357,7 +392,7 @@ export default async function HomePage() {
                   <StatusBadge value={String(batch.status)} />
                 </div>
                 <div className="mt-1 text-xs text-fgMuted">
-                  Replay outcome: accepted {String(batch.acceptedEventCount)}, rejected{" "}
+                  Replay outcome: accepted incl. dedup {String(batch.acceptedEventCount)}, rejected{" "}
                   {String(batch.rejectedEventCount)}
                 </div>
                 <div className="mt-1 text-xs text-fgMuted">

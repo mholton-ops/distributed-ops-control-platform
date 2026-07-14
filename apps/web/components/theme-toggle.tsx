@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 
 type ThemeMode = "light" | "dark" | "system";
 
 const STORAGE_KEY = "ops_theme_mode";
+const THEME_CHOICES = ["light", "dark", "system"] as const;
 
 function getSystemMode(): "light" | "dark" {
   if (typeof window === "undefined") {
@@ -63,16 +64,48 @@ export function ThemeToggle() {
     setMode(nextMode);
   }
 
+  function onChoiceKeyDown(event: KeyboardEvent<HTMLButtonElement>, choice: ThemeMode): void {
+    const currentIndex = THEME_CHOICES.indexOf(choice);
+    let nextIndex: number | null = null;
+
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % THEME_CHOICES.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + THEME_CHOICES.length) % THEME_CHOICES.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = THEME_CHOICES.length - 1;
+    }
+
+    if (nextIndex === null) {
+      return;
+    }
+
+    event.preventDefault();
+    const nextChoice = THEME_CHOICES[nextIndex];
+    onSelect(nextChoice);
+    event.currentTarget.parentElement
+      ?.querySelector<HTMLButtonElement>(`[data-theme-choice="${nextChoice}"]`)
+      ?.focus();
+  }
+
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-[11px] font-semibold uppercase tracking-wide text-fgMuted">Theme</span>
-      <div className="app-theme-toggle">
-        {(["light", "dark", "system"] as const).map((choice) => (
+    <div className="flex shrink-0 items-center gap-2">
+      <span className="sr-only" id="theme-label">Theme</span>
+      <div className="app-theme-toggle" role="radiogroup" aria-labelledby="theme-label">
+        {THEME_CHOICES.map((choice) => (
           <button
             key={choice}
             type="button"
             onClick={() => onSelect(choice)}
+            onKeyDown={(event) => onChoiceKeyDown(event, choice)}
             className={`app-theme-choice ${mode === choice ? "app-theme-choice-active" : ""}`}
+            role="radio"
+            aria-checked={mode === choice}
+            tabIndex={mode === choice || (mode === null && choice === "system") ? 0 : -1}
+            data-theme-choice={choice}
+            title={`Use ${choice} theme`}
           >
             {choice[0].toUpperCase() + choice.slice(1)}
           </button>

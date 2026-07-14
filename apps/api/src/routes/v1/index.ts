@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { createEventRequestSchema } from "@ops/contracts";
+import { createEventRequestSchema, externalEventTypeSchema, resolvedAssetStatusSchema } from "@ops/contracts";
 import { fetchEventsForAsset, ingestEvent, ingestSyncReplay } from "../../domain/event-service";
 import { runDivergenceScan } from "../../domain/divergence-service";
 import {
@@ -24,6 +24,7 @@ import {
   resolveReconciliationCase
 } from "../../domain/query-service";
 import { ApiError } from "../../lib/errors";
+import { env } from "../../lib/env";
 
 export async function registerV1Routes(app: FastifyInstance): Promise<void> {
   const assetParamsSchema = z.object({
@@ -41,23 +42,23 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
   const syncReplayBodySchema = z.object({
     siteId: z.string().uuid(),
     syncBatchId: z.string().uuid(),
-    events: z.array(createEventRequestSchema)
-  });
+    events: z.array(z.unknown()).max(500)
+  }).strict();
   const openCaseBodySchema = z.object({
     alertId: z.string().uuid().optional(),
     assetId: z.string().uuid().optional(),
-    siteId: z.string().uuid().optional(),
-    title: z.string().min(3),
-    description: z.string().min(3),
-    openedBy: z.string().min(2)
-  });
+    siteId: z.string().uuid(),
+    title: z.string().trim().min(3).max(160),
+    description: z.string().trim().min(3).max(8_000)
+  }).strict();
   const resolveCaseParamsSchema = z.object({
     caseId: z.string().uuid()
   });
   const resolveCaseBodySchema = z.object({
-    resolvedBy: z.string().min(2),
-    resolutionSummary: z.string().min(3)
-  });
+    resolutionSummary: z.string().trim().min(12).max(8_000),
+    expectedVersion: z.number().int().positive(),
+    resolvedAssetStatus: resolvedAssetStatusSchema.nullable().optional()
+  }).strict();
 
   app.get("/sites", async () => ({ data: await listSites(app.db) }));
   app.get(
@@ -166,6 +167,11 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
   app.get("/dashboard", async () => ({
     data: {
       summary: await dashboardSummary(app.db),
+      policy: {
+        syncStaleMinutes: env.SYNC_STALE_MINUTES,
+        transferConfirmationHours: env.TRANSFER_CONFIRMATION_HOURS,
+        dualSiteObservationMinutes: env.DUAL_SITE_OBSERVATION_MINUTES
+      },
       recentTransfers: await recentTransfers(app.db),
       recentAlerts: await recentAlerts(app.db),
       recentSyncBatches: await recentBatches(app.db)
@@ -181,6 +187,12 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
     },
     async (request) => {
       const body = request.body as z.infer<typeof createEventRequestSchema>;
+      if (!externalEventTypeSchema.safeParse(body.eventType).success) {
+        throw new ApiError(403, "Internal event types cannot be submitted directly", undefined, "INTERNAL_EVENT_FORBIDDEN");
+      }
+      if (!body.sourceSiteEventId) {
+        throw new ApiError(400, "A stable sourceSiteEventId is required", undefined, "SOURCE_EVENT_ID_REQUIRED");
+      }
       const result = await ingestEvent(app.db, body);
       return {
         data: result
@@ -216,7 +228,7 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
     },
     async (request) => {
       const body = request.body as z.infer<typeof openCaseBodySchema>;
-      return { data: await openReconciliationCase(app.db, body) };
+      return { data: await openReconciliationCase(app.db, body, request.testActor) };
     }
   );
 
@@ -231,7 +243,7 @@ export async function registerV1Routes(app: FastifyInstance): Promise<void> {
     async (request) => {
       const { caseId } = request.params as z.infer<typeof resolveCaseParamsSchema>;
       const body = request.body as z.infer<typeof resolveCaseBodySchema>;
-      const caseRecord = await resolveReconciliationCase(app.db, caseId, body);
+      const caseRecord = await resolveReconciliationCase(app.db, caseId, body, request.testActor);
       if (!caseRecord) {
         throw new ApiError(404, "Reconciliation case not found");
       }

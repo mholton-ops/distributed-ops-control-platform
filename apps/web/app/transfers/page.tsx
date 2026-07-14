@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { fetchJson } from "../../lib/api";
 import { CopyValue } from "../../components/copy-value";
+import { DataFreshness } from "../../components/data-freshness";
 import { DetailsLink } from "../../components/details-link";
 import { StatusBadge } from "../../components/status-badge";
 import { formatTimestampWithAge, shortId } from "../../lib/format";
@@ -92,7 +93,7 @@ export default async function TransfersPage({
         <p className="app-page-subtitle">
           Transfer orders with lifecycle state, origin/destination custody, and confirmation timing.
         </p>
-        <p className="app-page-meta">As of {formatTimestampWithAge(snapshotAt)}</p>
+        <DataFreshness snapshotAt={snapshotAt} />
         <div className="grid gap-3 md:grid-cols-4">
           <div className="app-summary-chip">
             <div className="app-summary-label">Filtered Transfers</div>
@@ -117,12 +118,14 @@ export default async function TransfersPage({
             name="q"
             defaultValue={assetQuery}
             placeholder="Transfer ID or asset ID"
+            aria-label="Search by transfer or asset ID"
             className="app-control"
           />
           <select
             name="status"
             defaultValue={statusFilter}
             className="app-control"
+            aria-label="Filter by transfer status"
           >
             <option value="">All statuses</option>
             <option value="initiated">Initiated</option>
@@ -132,6 +135,7 @@ export default async function TransfersPage({
             name="siteId"
             defaultValue={siteFilter}
             className="app-control"
+            aria-label="Filter transfers by site"
           >
             <option value="">All sites</option>
             {sites.data.map((site) => (
@@ -144,6 +148,7 @@ export default async function TransfersPage({
             name="windowHours"
             defaultValue={windowHours ? String(windowHours) : ""}
             className="app-control"
+            aria-label="Filter transfers by initiation time"
           >
             <option value="">Any time</option>
             <option value="1">Last 1 hour</option>
@@ -192,6 +197,7 @@ export default async function TransfersPage({
                           <DetailsLink
                             href={selectionHref(transfer.id)}
                             label={isSelected ? "Selected" : "Select"}
+                            accessibleLabel={`${isSelected ? "Selected" : "Select"} transfer ${shortId(transfer.id, 10)}`}
                           />
                         </div>
                       </td>

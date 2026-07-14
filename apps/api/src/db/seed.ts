@@ -1,4 +1,3 @@
-import "dotenv/config";
 import { eq, sql } from "drizzle-orm";
 import type { CreateEventRequest } from "@ops/contracts";
 import { db, closeDatabase } from "./client";
@@ -51,6 +50,24 @@ async function seedSites(): Promise<void> {
       { id: SITE_IDS.coastal, code: "COASTAL", name: "Coastal Site" }
     ])
     .onConflictDoNothing();
+}
+
+async function resetDemoData(): Promise<void> {
+  await db.execute(sql`
+    truncate table
+      sync_batch_event_attempt,
+      reconciliation_case,
+      alert,
+      evidence_metadata,
+      inspection,
+      asset_projection,
+      event_log,
+      sync_batch,
+      transfer_order,
+      asset,
+      site
+    restart identity cascade
+  `);
 }
 
 async function seedEvents(): Promise<void> {
@@ -629,8 +646,8 @@ async function seedEvents(): Promise<void> {
     eventType: "asset_received",
     assetId: ASSET_IDS.a2,
     siteId: SITE_IDS.north,
-    transferOrderId: TRANSFER_IDS.t2,
-    occurredAt: minutesAgo(470),
+    transferOrderId: null,
+    occurredAt: minutesAgo(50),
     sourceSiteEventId: "seed-a2-observed-north",
     payload: {
       fromSiteId: SITE_IDS.central,
@@ -642,8 +659,8 @@ async function seedEvents(): Promise<void> {
     eventType: "asset_received",
     assetId: ASSET_IDS.a2,
     siteId: SITE_IDS.coastal,
-    transferOrderId: TRANSFER_IDS.t2,
-    occurredAt: minutesAgo(465),
+    transferOrderId: null,
+    occurredAt: minutesAgo(45),
     sourceSiteEventId: "seed-a2-observed-coastal",
     payload: {
       fromSiteId: SITE_IDS.central,
@@ -656,7 +673,7 @@ async function seedEvents(): Promise<void> {
     assetId: ASSET_IDS.a8,
     siteId: SITE_IDS.north,
     transferOrderId: null,
-    occurredAt: minutesAgo(95),
+    occurredAt: minutesAgo(40),
     sourceSiteEventId: "seed-a8-observed-north",
     payload: {
       fromSiteId: SITE_IDS.central,
@@ -669,7 +686,7 @@ async function seedEvents(): Promise<void> {
     assetId: ASSET_IDS.a8,
     siteId: SITE_IDS.central,
     transferOrderId: null,
-    occurredAt: minutesAgo(90),
+    occurredAt: minutesAgo(35),
     sourceSiteEventId: "seed-a8-observed-central",
     payload: {
       fromSiteId: SITE_IDS.north,
@@ -679,10 +696,12 @@ async function seedEvents(): Promise<void> {
   });
 
   // One stale replay batch with deterministic duplicate handling.
-  await ingestSyncReplay(db, {
-    siteId: SITE_IDS.coastal,
-    syncBatchId: "9f1f9d4a-4505-4906-8f11-b18d20d2f41a",
-    events: [
+  await ingestSyncReplay(
+    db,
+    {
+      siteId: SITE_IDS.coastal,
+      syncBatchId: "9f1f9d4a-4505-4906-8f11-b18d20d2f41a",
+      events: [
       {
         eventType: "transfer_initiated",
         assetId: ASSET_IDS.a12,
@@ -724,7 +743,37 @@ async function seedEvents(): Promise<void> {
           reason: "Offline queue replayed after reconnect"
         }
       }
-    ]
+      ]
+    },
+    { startedAt: new Date(baseTime - 70 * 60_000), completedAt: new Date(baseTime - 69 * 60_000) }
+  );
+
+  // Give central a recent successful baseline. Its newer partial replay below
+  // then reads as degraded instead of falsely claiming a completed sync.
+  const centralBaselineSyncBatchId = "e86f9b05-cf30-4cbb-9fc5-e7c76328c2bf";
+  await emit({
+    eventType: "site_sync_started",
+    assetId: null,
+    siteId: SITE_IDS.central,
+    transferOrderId: null,
+    occurredAt: minutesAgo(40),
+    sourceSiteEventId: "seed-central-baseline-sync-started",
+    payload: { syncBatchId: centralBaselineSyncBatchId, queuedEventCount: 0 }
+  });
+  await emit({
+    eventType: "site_sync_completed",
+    assetId: null,
+    siteId: SITE_IDS.central,
+    transferOrderId: null,
+    occurredAt: minutesAgo(39),
+    sourceSiteEventId: "seed-central-baseline-sync-completed",
+    payload: {
+      syncBatchId: centralBaselineSyncBatchId,
+      acceptedEventCount: 0,
+      rejectedEventCount: 0,
+      deduplicatedEventCount: 0,
+      rejectionReasons: []
+    }
   });
 
   // One recent replay batch with a rejected event that produces an evidence-gap outcome.
@@ -760,35 +809,6 @@ async function seedEvents(): Promise<void> {
         }
       }
     ]
-  });
-
-  // Backdate coastal sync markers so default posture includes one stale site.
-  await emit({
-    eventType: "site_sync_started",
-    assetId: null,
-    siteId: SITE_IDS.coastal,
-    transferOrderId: null,
-    occurredAt: minutesAgo(70),
-    sourceSiteEventId: "seed-coastal-stale-sync-started",
-    payload: {
-      syncBatchId: "9f1f9d4a-4505-4906-8f11-b18d20d2f41a",
-      queuedEventCount: 3
-    }
-  });
-  await emit({
-    eventType: "site_sync_completed",
-    assetId: null,
-    siteId: SITE_IDS.coastal,
-    transferOrderId: null,
-    occurredAt: minutesAgo(69),
-    sourceSiteEventId: "seed-coastal-stale-sync-completed",
-    payload: {
-      syncBatchId: "9f1f9d4a-4505-4906-8f11-b18d20d2f41a",
-      acceptedEventCount: 3,
-      rejectedEventCount: 0,
-      deduplicatedEventCount: 1,
-      rejectionReasons: []
-    }
   });
 
   // Keep north healthy with a recent completed sync marker.
@@ -831,19 +851,26 @@ async function seedEvents(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  if (process.env.OPS_ALLOW_DEMO_SEED !== "ops_control_test") {
+    throw new Error(
+      "Refusing destructive demo seed without OPS_ALLOW_DEMO_SEED=ops_control_test."
+    );
+  }
+  await resetDemoData();
   await seedSites();
   await seedEvents();
   await runDivergenceScan(db);
   const [caseToResolve] = await db
-    .select({ id: reconciliationCases.id })
+    .select({ id: reconciliationCases.id, assetId: reconciliationCases.assetId, version: reconciliationCases.version })
     .from(reconciliationCases)
     .where(eq(reconciliationCases.status, "open"))
     .limit(1);
   if (caseToResolve) {
     await resolveReconciliationCase(db, caseToResolve.id, {
-      resolvedBy: "ops-supervisor",
-      resolutionSummary: "Replay completed and projection verified against accepted event stream."
-    });
+      resolutionSummary: "Replay completed and projection verified against accepted event stream.",
+      expectedVersion: caseToResolve.version,
+      resolvedAssetStatus: caseToResolve.assetId ? "at_site" : null
+    }, "ops-supervisor");
   }
   // eslint-disable-next-line no-console
   console.log("Seed complete");

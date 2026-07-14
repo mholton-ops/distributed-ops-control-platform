@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { fetchJson } from "../../lib/api";
 import { DetailsLink } from "../../components/details-link";
+import { DataFreshness } from "../../components/data-freshness";
 import { StatusBadge } from "../../components/status-badge";
 import { formatTimestampWithAge } from "../../lib/format";
 import {
@@ -64,7 +65,7 @@ export default async function SitesPage({
           Site synchronization status against stale thresholds and most recent successful sync
           completion.
         </p>
-        <p className="app-page-meta">As of {formatTimestampWithAge(snapshotAt)}</p>
+        <DataFreshness snapshotAt={snapshotAt} />
         <div className="grid gap-3 md:grid-cols-4">
           <div className="app-summary-chip">
             <div className="app-summary-label">Healthy</div>
@@ -89,12 +90,14 @@ export default async function SitesPage({
             name="q"
             defaultValue={query}
             placeholder="Site code or name"
+            aria-label="Search by site code or name"
             className="app-control"
           />
           <select
             name="status"
             defaultValue={statusFilter}
             className="app-control"
+            aria-label="Filter by synchronization posture"
           >
             <option value="">All sync states</option>
             <option value="healthy">Healthy</option>
@@ -105,6 +108,7 @@ export default async function SitesPage({
             name="windowHours"
             defaultValue={windowHours ? String(windowHours) : ""}
             className="app-control"
+            aria-label="Filter sites by last synchronization time"
           >
             <option value="">Any last-sync time</option>
             <option value="1">Last 1 hour</option>
@@ -149,6 +153,7 @@ export default async function SitesPage({
                           <DetailsLink
                             href={selectionHref(site.id)}
                             label={isSelected ? "Selected" : "Select"}
+                            accessibleLabel={`${isSelected ? "Selected" : "Select"} site ${site.code}`}
                           />
                         </div>
                       </td>

@@ -9,7 +9,13 @@ export const dashboardSummarySchema = z.object({
   recentAlerts: z.number().int().nonnegative(),
   replaySuccessCount: z.number().int().nonnegative(),
   replayFailureCount: z.number().int().nonnegative(),
-  unresolvedEvidenceGaps: z.number().int().nonnegative()
+  unresolvedEvidenceGaps: z.number().int().nonnegative(),
+  openHighSeverityAlerts: z.number().int().nonnegative(),
+  openTransferTimeoutAlerts: z.number().int().nonnegative(),
+  openDualSiteAlerts: z.number().int().nonnegative(),
+  openProjectionLagAlerts: z.number().int().nonnegative(),
+  openEvidenceGapAlerts: z.number().int().nonnegative(),
+  openStaleSiteAlerts: z.number().int().nonnegative()
 });
 
 export type DashboardSummary = z.infer<typeof dashboardSummarySchema>;

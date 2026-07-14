@@ -44,25 +44,36 @@ export function formatTimestamp(
   if (!value) {
     return emptyLabel;
   }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Invalid timestamp";
+  }
   return new Intl.DateTimeFormat("en-US", {
     year: "numeric",
     month: "short",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false
-  }).format(new Date(value));
+    hour12: false,
+    timeZone: "UTC",
+    timeZoneName: "short"
+  }).format(date);
 }
 
 export function formatRelativeAge(
   value: string | null | undefined,
-  emptyLabel = ""
+  emptyLabel = "",
+  now = Date.now()
 ): string {
   if (!value) {
     return emptyLabel;
   }
 
-  const diffMs = Date.now() - new Date(value).getTime();
+  const parsedTime = new Date(value).getTime();
+  if (Number.isNaN(parsedTime)) {
+    return "invalid time";
+  }
+  const diffMs = now - parsedTime;
   if (diffMs < 0) {
     return "just now";
   }
@@ -137,7 +148,7 @@ export function summarizeEventPayload(
     case "site_sync_started":
       return `Replay started (${asText(payload.queuedEventCount) || "0"} queued)`;
     case "site_sync_completed":
-      return `Replay completed (${asText(payload.acceptedEventCount) || "0"} accepted, ${asText(payload.rejectedEventCount) || "0"} rejected)`;
+      return `Replay completed (${asText(payload.acceptedEventCount) || "0"} accepted incl. dedup, ${asText(payload.rejectedEventCount) || "0"} rejected)`;
     case "divergence_detected":
       return asText(payload.summary) || "Divergence detected";
     case "reconciliation_opened":

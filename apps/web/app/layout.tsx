@@ -4,9 +4,15 @@ import { Navigation } from "../components/navigation";
 import { ThemeToggle } from "../components/theme-toggle";
 
 export const metadata: Metadata = {
-  title: "Distributed Ops Control Platform",
+  title: {
+    default: "Dashboard | Distributed Ops Control Platform",
+    template: "%s | Distributed Ops Control Platform"
+  },
   description: "Operational workbench for serialized asset control"
 };
+
+// Operational data is authenticated and request-scoped. Never contact the test API at build time.
+export const dynamic = "force-dynamic";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const themeScript = `
@@ -32,31 +38,33 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body>
-        <div className="mx-auto min-h-screen max-w-[1480px] px-4 py-6 md:px-6 md:py-7">
-          <header className="mb-6 rounded-2xl border border-line bg-panel px-5 py-5 md:px-7 md:py-6">
-            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              <div className="max-w-5xl">
-                <div className="text-xs font-semibold tracking-wide text-fgMuted">
-                  Operations Workbench
+        <a href="#main-content" className="app-skip-link">
+          Skip to main content
+        </a>
+        <div className="mx-auto min-h-screen max-w-[1480px] px-3 py-3 sm:px-4 md:px-6 md:py-5">
+          <header className="mb-4 min-w-0 rounded-xl border border-line bg-panel px-4 py-3 md:px-5 md:py-4">
+            <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-fgMuted">
+                  Operations workbench
                 </div>
-                <h1 className="mt-1 text-3xl font-semibold tracking-tight text-fg md:text-[2.1rem]">
-                  Distributed Ops Control Platform
+                <h1 className="truncate text-xl font-semibold tracking-tight text-fg md:text-2xl">
+                  Distributed Ops Control
                 </h1>
-                <p className="mt-3 text-[15px] text-fgMuted">
-                  A distributed operations control system that models how real-world systems drift out of sync and how that drift is detected and reconciled.
-                </p>
-                <p className="mt-1 text-[15px] text-fgMuted">
-                  This project demonstrates event-driven state, projection consistency, and operator workflows for resolving inconsistencies across distributed sites.
-                </p>
               </div>
               <ThemeToggle />
             </div>
             <Navigation />
-            <p className="mt-4 rounded-lg border border-line bg-panelMuted px-3 py-2.5 text-sm text-fgMuted">
-              Workflow: select a row, review the summary panel, then open detail when needed.
-            </p>
+            {!process.env.API_BASE_URL || !process.env.OPS_TEST_AUTH_TOKEN ? (
+              <p className="mt-3 rounded-lg border border-warning/80 bg-panelMuted px-3 py-2 text-sm text-fg" role="alert">
+                Test API access is not configured. Set <code>API_BASE_URL</code> and the server-only{" "}
+                <code>OPS_TEST_AUTH_TOKEN</code> before using this workbench.
+              </p>
+            ) : null}
           </header>
-          <main>{children}</main>
+          <main id="main-content" tabIndex={-1} className="min-w-0">
+            {children}
+          </main>
         </div>
       </body>
     </html>

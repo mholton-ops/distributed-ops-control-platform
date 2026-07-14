@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { fetchJson } from "../../../lib/api";
+import { fetchJson, isApiNotFound } from "../../../lib/api";
 import { CopyValue } from "../../../components/copy-value";
 import { EventInspector } from "../../../components/event-inspector";
 import { StatusBadge } from "../../../components/status-badge";
@@ -108,8 +108,11 @@ export default async function AssetPage({
 
   try {
     asset = await fetchJson<AssetDetailsResponse>(`/assets/${assetId}`);
-  } catch {
-    notFound();
+  } catch (error) {
+    if (isApiNotFound(error)) {
+      notFound();
+    }
+    throw error;
   }
 
   return (
@@ -227,7 +230,8 @@ export default async function AssetPage({
         <p className="mb-3 text-xs text-fgMuted">
           Use <span className="font-medium">Inspect</span> on any row to view normalized payload fields.
         </p>
-        <table>
+        <div className="overflow-x-auto">
+          <table>
           <thead>
               <tr>
                 <th>Sequence</th>
@@ -272,7 +276,8 @@ export default async function AssetPage({
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       </section>
 
       <section className="rounded-lg border border-line bg-panel p-4">
@@ -410,7 +415,8 @@ export default async function AssetPage({
 
       <section className="rounded-lg border border-line bg-panel p-4">
         <h3 className="mb-3 text-base font-semibold">Inspections</h3>
-        <table>
+        <div className="overflow-x-auto">
+          <table>
           <thead>
             <tr>
               <th>Inspection</th>
@@ -435,12 +441,14 @@ export default async function AssetPage({
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       </section>
 
       <section className="rounded-lg border border-line bg-panel p-4">
         <h3 className="mb-3 text-base font-semibold">Evidence Metadata</h3>
-        <table>
+        <div className="overflow-x-auto">
+          <table>
           <thead>
             <tr>
               <th>Evidence</th>
@@ -467,7 +475,8 @@ export default async function AssetPage({
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       </section>
 
       <section className="rounded-lg border border-line bg-panel p-4">

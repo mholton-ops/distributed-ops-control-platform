@@ -34,11 +34,17 @@ export function applyEventToProjection(
   previous: AssetProjection | null,
   event: DomainEvent
 ): AssetProjection | null {
-  if (["site_sync_started", "site_sync_completed", "reconciliation_opened"].includes(event.eventType)) {
+  if (["site_sync_started", "site_sync_completed"].includes(event.eventType)) {
     return previous;
   }
 
   if (!event.assetId) {
+    return previous;
+  }
+
+  // A projection may be updated by concurrent replay workers. Never let an
+  // older ledger position overwrite a state already derived from a newer one.
+  if (previous && event.sequenceNumber <= previous.lastSequence) {
     return previous;
   }
 
@@ -72,19 +78,28 @@ export function applyEventToProjection(
       next.status = "at_site";
       break;
     case "inspection_recorded":
-      next.status = "under_inspection";
+      next.status = event.payload.status === "review" ? "under_inspection" : "at_site";
       break;
     case "transfer_initiated":
       next.status = "in_transit";
       break;
     case "transfer_completed":
+      next.currentSiteId = event.siteId;
       next.status = "at_site";
       break;
     case "divergence_detected":
+      if (event.payload.severity === "high") {
+        next.status = "reconciliation_required";
+      }
+      break;
+    case "reconciliation_opened":
       next.status = "reconciliation_required";
       break;
     case "reconciliation_resolved":
-      next.status = "at_site";
+      next.status = String(event.payload.resolvedAssetStatus) as Exclude<
+        AssetLifecycleStatus,
+        "reconciliation_required"
+      >;
       break;
     default:
       break;
@@ -102,7 +117,7 @@ export function replayProjection(
   initial: AssetProjection | null,
   events: DomainEvent[]
 ): AssetProjection | null {
-  return events
+  return [...events]
     .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
     .reduce((projection, event) => applyEventToProjection(projection, event), initial);
 }

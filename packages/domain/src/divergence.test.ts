@@ -47,6 +47,44 @@ describe("divergence rules", () => {
     expect(findings[0].ruleCode).toBe("ASSET_OBSERVED_AT_MULTIPLE_SITES");
   });
 
+  it("does not treat historical custody changes as a current dual-site conflict", () => {
+    const findings = detectDualSiteObservations(
+      [
+        { assetId: "a-2", siteId: "s-1", observedAt: new Date("2026-01-01T00:00:00.000Z") },
+        { assetId: "a-2", siteId: "s-2", observedAt: new Date("2026-01-02T00:00:00.000Z") }
+      ],
+      {
+        now: new Date("2026-01-02T00:00:00.000Z"),
+        observationWindowMinutes: 60
+      }
+    );
+
+    expect(findings).toHaveLength(0);
+  });
+
+  it("allows origin and destination observations during an active transfer", () => {
+    const findings = detectDualSiteObservations(
+      [
+        { assetId: "a-2", siteId: "s-1", observedAt: new Date("2026-01-01T00:05:00.000Z") },
+        { assetId: "a-2", siteId: "s-2", observedAt: new Date("2026-01-01T00:10:00.000Z") }
+      ],
+      {
+        now: new Date("2026-01-01T00:15:00.000Z"),
+        observationWindowMinutes: 60,
+        activeTransfers: [
+          {
+            assetId: "a-2",
+            originSiteId: "s-1",
+            destinationSiteId: "s-2",
+            initiatedAt: new Date("2026-01-01T00:00:00.000Z")
+          }
+        ]
+      }
+    );
+
+    expect(findings).toHaveLength(0);
+  });
+
   it("flags inspections without evidence metadata", () => {
     const findings = detectInspectionEvidenceGaps([
       {

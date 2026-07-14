@@ -2,14 +2,22 @@
 
 ## Base URL
 
-- Local: `http://localhost:4000`
-- Versioned API: `http://localhost:4000/api/v1`
+- Loopback test API: `http://127.0.0.1:4000`
+- Versioned API: `http://127.0.0.1:4000/api/v1`
+
+The API is not supported on a public listener.
+
+## Test Authentication
+
+Every `/api/v1/*` endpoint except versioned liveness/readiness, plus both metrics routes, requires `Authorization: Bearer <runtime test token>`. The token is supplied to server processes through `OPS_TEST_AUTH_TOKEN`; it is never a browser-visible variable.
+
+The API records `OPS_TEST_ACTOR` for reconciliation writes. `openedBy` and `resolvedBy` are not accepted from clients. This is a single-operator test control, not a production account or role model.
 
 ## Health and Metrics
 
-- `GET /health`: service heartbeat and uptime
-- `GET /api/v1/health`: versioned heartbeat endpoint
-- `GET /metrics`: in-memory operational counters
+- `GET /health` and `GET /api/v1/health`: unauthenticated process liveness and uptime
+- `GET /ready` and `GET /api/v1/ready`: unauthenticated PostgreSQL/migration readiness; returns `503` when unavailable
+- `GET /metrics` and `GET /api/v1/metrics`: authenticated in-memory operational counters
 
 ## Core Read Endpoints
 
@@ -24,6 +32,7 @@
 - `GET /api/v1/sync-batches`
 - `GET /api/v1/sync-batches/:syncBatchId`
 - `GET /api/v1/alerts`
+- `GET /api/v1/evidence-metadata`
 - `GET /api/v1/reconciliation-cases`
 - `GET /api/v1/reconciliation-cases/:caseId`
 
@@ -38,17 +47,23 @@
 ## Request/Response Notes
 
 - Requests are validated with Zod contracts (`packages/contracts`).
-- Event payload schema depends on `eventType`.
+- Event payload schema depends on `eventType`; unknown fields and inconsistent cross-field IDs are rejected.
+- Direct ingestion and replay accept external operating events only. Lifecycle/divergence/reconciliation events are server-generated.
+- Direct events and every replay item require a stable `sourceSiteEventId`.
+- Replay batches contain at most 500 events and persist one disposition per submitted index.
 - API errors use structured payload:
 
 ```json
 {
   "error": {
+    "code": "STABLE_MACHINE_CODE",
     "message": "Readable failure message",
     "details": {}
   }
 }
 ```
+
+Unknown server failures return a generic message without database internals. Authentication failures use `AUTHENTICATION_REQUIRED`; validation, identity reuse, replay state, and case-version conflicts have distinct codes.
 
 ## Example: Ingest Event
 
@@ -78,7 +93,8 @@ Response:
   "data": {
     "eventId": "dc1e5f53-22ec-4593-9e7f-77e83ccf4f74",
     "sequenceNumber": 42,
-    "deduplicated": false
+    "deduplicated": false,
+    "eventHash": "0000000000000000000000000000000000000000000000000000000000000000"
   }
 }
 ```
@@ -86,13 +102,60 @@ Response:
 ## Flow Summary
 
 1. API validates event envelope + type-specific payload.
-2. Event is deduplicated by `(site_id, source_site_event_id)` when provided.
-3. Event is appended to `event_log`.
-4. Deterministic side effects update transfer/inspection/evidence/sync tables.
-5. Projection reducer updates `asset_projection`.
+2. API serializes writes for the affected asset and computes a canonical event hash.
+3. An exact source-key retry returns the original event; different content under the same key is a `409` conflict.
+4. Event append, deterministic side effects, and projection advancement commit as one PostgreSQL transaction.
+
+## Example: Replay Outcome
+
+`POST /api/v1/sync/replay` returns batch status/counts plus durable item dispositions:
+
+```json
+{
+  "data": {
+    "syncBatchId": "cb16f437-d84e-4f7e-a3b8-66c4f7376d1d",
+    "status": "partial",
+    "acceptedEventCount": 1,
+    "rejectedEventCount": 1,
+    "deduplicatedEventCount": 0,
+    "rejectionReasons": ["INVALID_EVENT: Replay event payload is invalid"],
+    "dispositions": [
+      {
+        "index": 0,
+        "sourceSiteEventId": "north-queued-001",
+        "eventHash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "disposition": "accepted",
+        "eventId": "dc1e5f53-22ec-4593-9e7f-77e83ccf4f74",
+        "sequenceNumber": 42,
+        "errorCode": null,
+        "errorMessage": null
+      },
+      {
+        "index": 1,
+        "sourceSiteEventId": "north-queued-002",
+        "eventHash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "disposition": "rejected",
+        "eventId": null,
+        "sequenceNumber": null,
+        "errorCode": "INVALID_EVENT",
+        "errorMessage": "Replay event payload is invalid"
+      }
+    ]
+  }
+}
+```
+
+Reusing a completed batch ID with identical content returns the persisted result. Different content returns `SYNC_BATCH_CONTENT_CONFLICT`; a concurrent worker receives `SYNC_BATCH_IN_PROGRESS`.
+
+## Reconciliation Writes
+
+Manual case creation requires an explicit valid `siteId`, `title`, and `description`. The API validates optional alert/asset references and derives the recorded actor server-side.
+
+Resolution requires `resolutionSummary` and `expectedVersion`. `resolvedAssetStatus` is required for an asset-linked case and must be omitted for a site-level case. Stale writes return `CASE_VERSION_CONFLICT`; a successful resolution appends its immutable event and atomically updates the case plus its linked alert and asset projection when present and applicable.
 
 ## Non-Goals
 
 - Not a full public API product surface.
 - Not version-negotiated backward compatibility guarantees.
 - Not an implementation of confidential endpoint contracts.
+- Not a production authentication or authorization contract.

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { fetchJson } from "../../lib/api";
 import { CopyValue } from "../../components/copy-value";
+import { DataFreshness } from "../../components/data-freshness";
 import { DetailsLink } from "../../components/details-link";
 import { StatusBadge } from "../../components/status-badge";
 import { formatCodeLabel, formatTimestampWithAge, shortId } from "../../lib/format";
@@ -94,7 +95,7 @@ export default async function AssetsPage({
           Projected asset state from the accepted event stream, including current custody and
           lifecycle status.
         </p>
-        <p className="app-page-meta">As of {formatTimestampWithAge(snapshotAt)}</p>
+        <DataFreshness snapshotAt={snapshotAt} />
         <div className="grid gap-3 md:grid-cols-4">
           <div className="app-summary-chip">
             <div className="app-summary-label">Filtered Assets</div>
@@ -119,12 +120,14 @@ export default async function AssetsPage({
             name="q"
             defaultValue={assetQuery}
             placeholder="Asset ID or serial"
+            aria-label="Search by asset ID or serial number"
             className="app-control"
           />
           <select
             name="status"
             defaultValue={statusFilter}
             className="app-control"
+            aria-label="Filter by asset status"
           >
             <option value="">All statuses</option>
             <option value="at_site">At Site</option>
@@ -136,6 +139,7 @@ export default async function AssetsPage({
             name="siteId"
             defaultValue={siteFilter}
             className="app-control"
+            aria-label="Filter assets by current site"
           >
             <option value="">All sites</option>
             {sites.data.map((site) => (
@@ -148,6 +152,7 @@ export default async function AssetsPage({
             name="windowHours"
             defaultValue={windowHours ? String(windowHours) : ""}
             className="app-control"
+            aria-label="Filter assets by last event time"
           >
             <option value="">Any time</option>
             <option value="1">Last 1 hour</option>
@@ -197,6 +202,7 @@ export default async function AssetsPage({
                           <DetailsLink
                             href={selectionHref(asset.assetId)}
                             label={isSelected ? "Selected" : "Select"}
+                            accessibleLabel={`${isSelected ? "Selected" : "Select"} asset ${asset.serialNumber}`}
                           />
                         </div>
                       </td>

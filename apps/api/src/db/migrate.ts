@@ -1,45 +1,71 @@
-import "dotenv/config";
+import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { pool } from "./client";
+import { assertDatabaseRoleBoundary, pool } from "./client";
 
-async function ensureMigrationsTable(): Promise<void> {
-  await pool.query(`
-    create table if not exists schema_migrations (
-      id serial primary key,
-      filename text not null unique,
-      applied_at timestamptz not null default now()
-    )
-  `);
+const migrationLockKey = "distributed-ops-control-platform:migrations";
+
+function checksum(contents: string): string {
+  return createHash("sha256").update(contents).digest("hex");
 }
 
 async function runMigrations(): Promise<void> {
-  await ensureMigrationsTable();
-  const directory = path.resolve(process.cwd(), "src", "db", "migrations");
-  const entries = (await readdir(directory)).filter((entry) => entry.endsWith(".sql")).sort();
+  const client = await pool.connect();
+  try {
+    await assertDatabaseRoleBoundary(client);
+    await client.query("select pg_advisory_lock(hashtext($1))", [migrationLockKey]);
+    await client.query(`
+      create table if not exists schema_migrations (
+        id serial primary key,
+        filename text not null unique,
+        checksum varchar(64),
+        applied_at timestamptz not null default now()
+      )
+    `);
+    await client.query("alter table schema_migrations add column if not exists checksum varchar(64)");
 
-  for (const filename of entries) {
-    const alreadyApplied = await pool.query(
-      "select 1 from schema_migrations where filename = $1",
-      [filename]
-    );
+    const directory = path.resolve(process.cwd(), "src", "db", "migrations");
+    const entries = (await readdir(directory)).filter((entry) => entry.endsWith(".sql")).sort();
+    for (const filename of entries) {
+      const migrationSql = await readFile(path.join(directory, filename), "utf8");
+      const migrationChecksum = checksum(migrationSql);
+      const prior = await client.query<{ checksum: string | null }>(
+        "select checksum from schema_migrations where filename = $1",
+        [filename]
+      );
+      if (prior.rows[0]) {
+        if (prior.rows[0].checksum && prior.rows[0].checksum !== migrationChecksum) {
+          throw new Error(`Applied migration checksum mismatch: ${filename}`);
+        }
+        if (!prior.rows[0].checksum) {
+          await client.query(
+            "update schema_migrations set checksum = $2 where filename = $1 and checksum is null",
+            [filename, migrationChecksum]
+          );
+        }
+        continue;
+      }
 
-    if (alreadyApplied.rowCount && alreadyApplied.rowCount > 0) {
-      continue;
+      await client.query("begin");
+      try {
+        await client.query(migrationSql);
+        await client.query(
+          "insert into schema_migrations (filename, checksum) values ($1, $2)",
+          [filename, migrationChecksum]
+        );
+        await client.query("commit");
+        // eslint-disable-next-line no-console
+        console.log(`Applied migration ${filename}`);
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      }
     }
-
-    const sql = await readFile(path.join(directory, filename), "utf8");
-
-    await pool.query("begin");
+  } finally {
     try {
-      await pool.query(sql);
-      await pool.query("insert into schema_migrations (filename) values ($1)", [filename]);
-      await pool.query("commit");
-      // eslint-disable-next-line no-console
-      console.log(`Applied migration ${filename}`);
-    } catch (error) {
-      await pool.query("rollback");
-      throw error;
+      await client.query("select pg_advisory_unlock(hashtext($1))", [migrationLockKey]);
+    } finally {
+      client.release();
     }
   }
 }

@@ -9,9 +9,9 @@ export default {
         line: "#d6e0ec",
         fg: "#132335",
         fgMuted: "#567089",
-        success: "#0f9d6a",
-        warning: "#b7791f",
-        critical: "#c2413d"
+        success: "#08734d",
+        warning: "#835000",
+        critical: "#a82b27"
       },
       fontFamily: {
         sans: ["Segoe UI", "IBM Plex Sans", "Roboto", "Helvetica Neue", "Arial", "sans-serif"],

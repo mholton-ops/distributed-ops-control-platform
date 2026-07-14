@@ -15,23 +15,117 @@ concurrency:
 
 jobs:
   verify:
-    name: Build, test, and audit
+    name: Locked build, test, audit, and browser checks
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       CI: "true"
-      DATABASE_URL: postgresql://ci:ci@invalid.invalid:5432/ci
+      NEXT_TELEMETRY_DISABLED: "1"
+      OPS_TEST_ACTOR: ci-test-operator
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-      - name: Set up Node.js
+
+      - name: Set up pinned Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version-file: .node-version
           cache: npm
+
+      - name: Generate ephemeral test credentials
+        shell: bash
+        run: |
+          postgres_admin_password="$(openssl rand -hex 32)"
+          postgres_app_password="$(openssl rand -hex 32)"
+          auth_token="$(openssl rand -hex 32)"
+          echo "::add-mask::${postgres_admin_password}"
+          echo "::add-mask::${postgres_app_password}"
+          echo "::add-mask::${auth_token}"
+          echo "POSTGRES_ADMIN_PASSWORD=${postgres_admin_password}" >> "${GITHUB_ENV}"
+          echo "OPS_TEST_DB_PASSWORD=${postgres_app_password}" >> "${GITHUB_ENV}"
+          echo "OPS_TEST_AUTH_TOKEN=${auth_token}" >> "${GITHUB_ENV}"
+          echo "DATABASE_URL=postgresql://ops_test:${postgres_app_password}@127.0.0.1:5433/ops_control_test" >> "${GITHUB_ENV}"
+          echo "COMPOSE_DATABASE_URL=postgresql://ops_test:${postgres_app_password}@postgres:5432/ops_control_test" >> "${GITHUB_ENV}"
+
       - name: Install locked dependencies
         run: npm ci --no-audit --no-fund
-      - name: Build and test
+
+      - name: Block high and critical dependency vulnerabilities
+        run: npm run audit
+
+      - name: Run clean build, lint, typecheck, unit tests, and compiled-start smoke
         run: npm run verify
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
+
+      - name: Start ephemeral PostgreSQL test service
+        run: docker compose up -d --wait postgres
+
+      - name: Verify restricted PostgreSQL app role
+        run: docker compose exec -T postgres sh /usr/local/bin/check-app-role.sh
+
+      - name: Migrate the guarded test database
+        run: npm run db:migrate
+
+      - name: Run PostgreSQL integrity integration tests
+        env:
+          OPS_RUN_DB_INTEGRATION: "1"
+        run: npm run test:integration
+
+      - name: Verify repeatable browser scenario seeding
+        env:
+          OPS_ALLOW_DEMO_SEED: ops_control_test
+        run: |
+          npm run db:seed
+          npm run db:seed
+
+      - name: Install the Chromium test runtime
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser and accessibility tests
+        run: npm run test:e2e
+
+      - name: Build non-root runtime images
+        run: |
+          docker compose build api web
+
+      - name: Verify database tooling inside the production API image
+        run: |
+          docker compose run --rm --no-deps api npm run db:migrate
+          docker compose run --rm --no-deps \
+            -e OPS_ALLOW_DEMO_SEED=ops_control_test \
+            api npm run seed
+
+      - name: Smoke the composed runtime stack
+        run: |
+          docker compose up -d --wait api web
+          curl --fail --silent --show-error http://127.0.0.1:4000/health > /dev/null
+          curl --fail --silent --show-error http://127.0.0.1:4000/ready > /dev/null
+          curl --fail --silent --show-error http://127.0.0.1:3000/api/health > /dev/null
+          curl --fail --silent --show-error http://127.0.0.1:3000/ | grep --quiet "Distributed Ops Control"
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer ${OPS_TEST_AUTH_TOKEN}" \
+            http://127.0.0.1:4000/api/v1/dashboard > /dev/null
+          test "$(docker compose exec -T api id -u)" != "0"
+          test "$(docker compose exec -T web id -u)" != "0"
+          test "$(docker compose port postgres 5432)" = "127.0.0.1:5433"
+          test "$(docker compose port api 4000)" = "127.0.0.1:4000"
+          test "$(docker compose port web 3000)" = "127.0.0.1:3000"
+
+      - name: Verify idempotent simulator replay
+        run: |
+          npm run start --workspace @ops/simulator -- --scenario=healthy-movement
+          npm run start --workspace @ops/simulator -- --scenario=healthy-movement
+
+      - name: Stop disposable test services
+        if: always()
+        run: docker compose down --volumes --remove-orphans
+
+      - name: Upload browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-report
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 7

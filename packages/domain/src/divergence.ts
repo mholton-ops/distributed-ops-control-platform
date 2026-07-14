@@ -23,6 +23,13 @@ export type AssetObservation = {
   observedAt: Date;
 };
 
+export type ActiveTransferContext = {
+  assetId: string;
+  originSiteId: string;
+  destinationSiteId: string;
+  initiatedAt: Date;
+};
+
 export type InspectionEvidenceGap = {
   inspectionId: string;
   assetId: string;
@@ -70,10 +77,27 @@ export function detectTransferTimeouts(
 }
 
 export function detectDualSiteObservations(
-  observations: AssetObservation[]
+  observations: AssetObservation[],
+  options: {
+    now?: Date;
+    observationWindowMinutes?: number;
+    activeTransfers?: ActiveTransferContext[];
+  } = {}
 ): DivergenceRuleResult[] {
+  const now =
+    options.now ??
+    observations.reduce(
+      (latest, observation) =>
+        observation.observedAt.getTime() > latest.getTime() ? observation.observedAt : latest,
+      new Date(0)
+    );
+  const observationWindowMinutes = options.observationWindowMinutes ?? 60;
+  const cutoff = now.getTime() - observationWindowMinutes * 60 * 1_000;
+  const recentObservations = observations.filter(
+    (observation) => observation.observedAt.getTime() >= cutoff && observation.observedAt <= now
+  );
   const byAsset = new Map<string, AssetObservation[]>();
-  for (const observation of observations) {
+  for (const observation of recentObservations) {
     const list = byAsset.get(observation.assetId) ?? [];
     list.push(observation);
     byAsset.set(observation.assetId, list);
@@ -82,8 +106,30 @@ export function detectDualSiteObservations(
   const findings: DivergenceRuleResult[] = [];
 
   for (const [assetId, assetObservations] of byAsset.entries()) {
-    const siteSet = new Set(assetObservations.map((record) => record.siteId));
+    const latestBySite = new Map<string, AssetObservation>();
+    for (const observation of assetObservations) {
+      const prior = latestBySite.get(observation.siteId);
+      if (!prior || prior.observedAt < observation.observedAt) {
+        latestBySite.set(observation.siteId, observation);
+      }
+    }
+    const currentObservations = [...latestBySite.values()];
+    const siteSet = new Set(currentObservations.map((record) => record.siteId));
     if (siteSet.size > 1) {
+      const expectedDuringTransfer = (options.activeTransfers ?? []).some((transfer) => {
+        if (transfer.assetId !== assetId) {
+          return false;
+        }
+        const expectedSites = new Set([transfer.originSiteId, transfer.destinationSiteId]);
+        return (
+          [...siteSet].every((siteId) => expectedSites.has(siteId)) &&
+          currentObservations.every((observation) => observation.observedAt >= transfer.initiatedAt)
+        );
+      });
+      if (expectedDuringTransfer) {
+        continue;
+      }
+
       findings.push({
         ruleCode: "ASSET_OBSERVED_AT_MULTIPLE_SITES",
         severity: "high",
@@ -91,7 +137,8 @@ export function detectDualSiteObservations(
         siteId: null,
         summary: "Conflicting site observations",
         details: {
-          observations: assetObservations.map((record) => ({
+          observationWindowMinutes,
+          observations: currentObservations.map((record) => ({
             siteId: record.siteId,
             observedAt: record.observedAt.toISOString()
           }))

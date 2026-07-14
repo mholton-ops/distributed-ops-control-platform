@@ -1,5 +1,4 @@
 import Fastify from "fastify";
-import cors from "@fastify/cors";
 import {
   serializerCompiler,
   validatorCompiler,
@@ -8,6 +7,7 @@ import {
 import { db } from "./db/client";
 import { ApiError } from "./lib/errors";
 import { env } from "./lib/env";
+import { registerTestAuthentication } from "./lib/auth";
 import { registerHealthRoutes } from "./routes/health";
 import { registerV1Routes } from "./routes/v1";
 
@@ -15,20 +15,22 @@ export function buildServer() {
   const app = Fastify({
     logger: {
       level: env.LOG_LEVEL,
+      redact: {
+        paths: ["req.headers.authorization"],
+        censor: "[REDACTED]"
+      },
       base: {
         service: "distributed-ops-control-platform-api"
       }
-    }
+    },
+    bodyLimit: 1_048_576
   }).withTypeProvider<ZodTypeProvider>();
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
-  app.register(cors, {
-    origin: true
-  });
-
   app.decorate("db", db);
+  registerTestAuthentication(app);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ApiError) {
@@ -41,8 +43,9 @@ export function buildServer() {
       );
       reply.status(error.statusCode).send({
         error: {
+          code: error.code,
           message: error.message,
-          details: error.details ?? null
+          details: error.statusCode < 500 ? (error.details ?? null) : null
         }
       });
       return;
@@ -68,10 +71,8 @@ export function buildServer() {
       );
       reply.status(400).send({
         error: {
-          message: validationError.message,
-          details: {
-            validation: validationError.validation ?? null
-          }
+          code: "REQUEST_VALIDATION_FAILED",
+          message: "Request validation failed"
         }
       });
       return;
@@ -80,6 +81,7 @@ export function buildServer() {
     request.log.error({ err: error }, "Unhandled API error");
     reply.status(500).send({
       error: {
+        code: "INTERNAL_SERVER_ERROR",
         message: "Internal server error"
       }
     });

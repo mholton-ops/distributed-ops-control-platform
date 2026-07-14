@@ -62,6 +62,8 @@ export const syncBatches = pgTable("sync_batch", {
   queuedEventCount: integer("queued_event_count").notNull().default(0),
   acceptedEventCount: integer("accepted_event_count").notNull().default(0),
   rejectedEventCount: integer("rejected_event_count").notNull().default(0),
+  deduplicatedEventCount: integer("deduplicated_event_count").notNull().default(0),
+  requestHash: varchar("request_hash", { length: 64 }).notNull(),
   replayResultSummary: text("replay_result_summary"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 });
@@ -79,6 +81,7 @@ export const eventLog = pgTable(
     transferOrderId: uuid("transfer_order_id"),
     syncBatchId: uuid("sync_batch_id"),
     sourceSiteEventId: varchar("source_site_event_id", { length: 128 }),
+    eventHash: varchar("event_hash", { length: 64 }).notNull(),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
     ingestedAt: timestamp("ingested_at", { withTimezone: true }).notNull().defaultNow(),
     payload: jsonb("payload").notNull()
@@ -92,6 +95,33 @@ export const eventLog = pgTable(
     siteOccurredAtIndex: index("idx_event_log_site_occurred_at").on(table.siteId, table.occurredAt),
     transferOrderIndex: index("idx_event_log_transfer_order_id").on(table.transferOrderId),
     syncBatchIndex: index("idx_event_log_sync_batch_id").on(table.syncBatchId)
+  })
+);
+
+export const syncBatchEventAttempts = pgTable(
+  "sync_batch_event_attempt",
+  {
+    id: uuid("id").primaryKey(),
+    syncBatchId: uuid("sync_batch_id")
+      .notNull()
+      .references(() => syncBatches.id),
+    eventIndex: integer("event_index").notNull(),
+    sourceSiteEventId: varchar("source_site_event_id", { length: 128 }).notNull(),
+    eventHash: varchar("event_hash", { length: 64 }).notNull(),
+    disposition: varchar("disposition", { length: 24 }).notNull(),
+    eventId: uuid("event_id").references(() => eventLog.id),
+    errorCode: varchar("error_code", { length: 64 }),
+    errorMessage: varchar("error_message", { length: 500 }),
+    attemptedAt: timestamp("attempted_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => ({
+    batchIndex: index("idx_sync_batch_event_attempt_batch").on(
+      table.syncBatchId,
+      table.eventIndex
+    ),
+    sourceIndex: index("idx_sync_batch_event_attempt_source").on(
+      table.sourceSiteEventId
+    )
   })
 );
 
@@ -137,18 +167,29 @@ export const evidenceMetadata = pgTable("evidence_metadata", {
   recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow()
 });
 
-export const alerts = pgTable("alert", {
-  id: uuid("id").primaryKey(),
-  ruleCode: varchar("rule_code", { length: 128 }).notNull(),
-  severity: varchar("severity", { length: 16 }).notNull(),
-  status: varchar("status", { length: 16 }).notNull().default("open"),
-  assetId: uuid("asset_id").references(() => assets.id),
-  siteId: uuid("site_id").references(() => sites.id),
-  summary: text("summary").notNull(),
-  details: jsonb("details").notNull(),
-  detectedAt: timestamp("detected_at", { withTimezone: true }).notNull().defaultNow(),
-  resolvedAt: timestamp("resolved_at", { withTimezone: true })
-});
+export const alerts = pgTable(
+  "alert",
+  {
+    id: uuid("id").primaryKey(),
+    fingerprint: varchar("fingerprint", { length: 64 }).notNull(),
+    ruleCode: varchar("rule_code", { length: 128 }).notNull(),
+    severity: varchar("severity", { length: 16 }).notNull(),
+    status: varchar("status", { length: 16 }).notNull().default("open"),
+    assetId: uuid("asset_id").references(() => assets.id),
+    siteId: uuid("site_id").references(() => sites.id),
+    summary: text("summary").notNull(),
+    details: jsonb("details").notNull(),
+    detectedAt: timestamp("detected_at", { withTimezone: true }).notNull().defaultNow(),
+    lastDetectedAt: timestamp("last_detected_at", { withTimezone: true }).notNull().defaultNow(),
+    occurrenceCount: integer("occurrence_count").notNull().default(1),
+    acknowledgedBy: varchar("acknowledged_by", { length: 96 }),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true })
+  },
+  (table) => ({
+    fingerprintIndex: uniqueIndex("alert_fingerprint_unq").on(table.fingerprint)
+  })
+);
 
 export const reconciliationCases = pgTable("reconciliation_case", {
   id: uuid("id").primaryKey(),
@@ -162,7 +203,8 @@ export const reconciliationCases = pgTable("reconciliation_case", {
   openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
   resolvedBy: varchar("resolved_by", { length: 96 }),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
-  resolutionSummary: text("resolution_summary")
+  resolutionSummary: text("resolution_summary"),
+  version: integer("version").notNull().default(1)
 });
 
 export type Site = typeof sites.$inferSelect;

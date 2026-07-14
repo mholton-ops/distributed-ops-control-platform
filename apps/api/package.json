@@ -5,30 +5,26 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "esbuild src/index.ts src/db/migrate.ts src/db/seed.ts --bundle --platform=node --target=node24 --format=esm --sourcemap --outbase=src --outdir=dist --external:drizzle-orm --external:drizzle-orm/* --external:fastify --external:fastify-type-provider-zod --external:pg --external:zod",
     "start": "node dist/index.js",
-    "db:migrate": "tsx src/db/migrate.ts",
-    "seed": "tsx src/db/seed.ts",
-    "test": "vitest run"
+    "db:migrate": "node ../../scripts/run-test-database-task.mjs migrate",
+    "seed": "node ../../scripts/run-test-database-task.mjs seed",
+    "test": "vitest run --exclude **/*.integration.test.ts",
+    "test:integration": "vitest run tests/event-service.integration.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@fastify/cors": "^11.1.0",
     "@ops/contracts": "0.1.0",
     "@ops/domain": "0.1.0",
-    "dotenv": "^17.2.3",
     "drizzle-orm": "0.45.2",
-    "fastify": "^5.6.1",
-    "fastify-type-provider-zod": "^6.1.0",
-    "pg": "^8.16.3",
-    "pg-types": "^2.2.0",
-    "tsx": "^4.21.0",
-    "uuid": "^13.0.0",
-    "zod": "^4.1.11"
+    "fastify": "5.10.0",
+    "fastify-type-provider-zod": "6.1.0",
+    "pg": "8.22.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^24.3.0",
-    "@types/pg": "^8.15.5",
-    "drizzle-kit": "0.31.10",
-    "typescript": "^5.9.2"
+    "@types/node": "24.13.3",
+    "@types/pg": "8.20.0",
+    "typescript": "5.9.3"
   }
 }

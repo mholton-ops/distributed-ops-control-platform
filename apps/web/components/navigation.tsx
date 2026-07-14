@@ -16,17 +16,21 @@ export function Navigation() {
   const pathname = usePathname();
 
   return (
-    <nav className="mt-4 flex flex-wrap gap-2 text-sm">
-      {links.map((link) => (
+    <nav className="app-shell-nav mt-3 flex gap-2 overflow-x-auto pb-1 text-sm" aria-label="Primary">
+      {links.map((link) => {
+        const isActive =
+          link.href === "/" ? pathname === "/" : pathname === link.href || pathname.startsWith(`${link.href}/`);
+        return (
         <Link
           key={link.href}
           href={link.href}
-          className={`app-nav-link ${pathname === link.href ? "app-nav-link-active" : ""}`}
-          aria-current={pathname === link.href ? "page" : undefined}
+          className={`app-nav-link shrink-0 ${isActive ? "app-nav-link-active" : ""}`}
+          aria-current={isActive ? "page" : undefined}
         >
           {link.label}
         </Link>
-      ))}
+        );
+      })}
     </nav>
   );
 }

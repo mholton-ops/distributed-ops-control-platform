@@ -4,7 +4,6 @@ import type { db as databaseClient } from "../db/client";
 import {
   alerts,
   assetProjection,
-  eventLog,
   reconciliationCases,
   sites,
   syncBatches,
@@ -12,8 +11,27 @@ import {
 } from "../db/schema";
 import { env } from "../lib/env";
 import { ApiError } from "../lib/errors";
+import { ingestEvent } from "./event-service";
 
 type Database = typeof databaseClient;
+
+async function readAssetStreamPosition(
+  db: Database,
+  assetId: string,
+  sequenceNumber: number
+): Promise<{ latestAcceptedEventSequence: number; projectionLag: number }> {
+  const result = await db.execute(sql`
+    select
+      coalesce(max(sequence_number), ${sequenceNumber}) as latest_sequence,
+      count(*) filter (where sequence_number > ${sequenceNumber})::int as lag_event_count
+    from event_log
+    where asset_id = ${assetId}
+  `);
+  return {
+    latestAcceptedEventSequence: Number(result.rows[0]?.latest_sequence ?? sequenceNumber),
+    projectionLag: Number(result.rows[0]?.lag_event_count ?? 0)
+  };
+}
 
 function computeSyncHealth(lastSyncCompletedAt: Date | null): "healthy" | "stale" {
   if (!lastSyncCompletedAt) {
@@ -58,7 +76,8 @@ function computeSyncPosture(input: {
 
 function parseReplayDiagnostics(
   replayResultSummary: string | null,
-  rejectedEventCount: number
+  rejectedEventCount: number,
+  deduplicatedEventCount: number
 ): {
   idempotencyModel: string;
   deduplicatedEventCount: number;
@@ -67,7 +86,7 @@ function parseReplayDiagnostics(
   const fallback = {
     idempotencyModel:
       "Replay uses source-site deduplication key (site_id, source_site_event_id). Duplicate events are accepted without duplicate side effects.",
-    deduplicatedEventCount: 0,
+    deduplicatedEventCount,
     rejectionReasons:
       rejectedEventCount > 0
         ? ["One or more events were rejected during replay; inspect batch event timeline for context."]
@@ -103,8 +122,8 @@ function parseReplayDiagnostics(
 
 export async function listSites(db: Database): Promise<unknown[]> {
   const [rows, latestBatchRows] = await Promise.all([
-    db.select().from(sites).orderBy(sites.code),
-    db.select().from(syncBatches).orderBy(desc(syncBatches.startedAt))
+    db.select().from(sites).orderBy(sites.code).limit(500),
+    db.select().from(syncBatches).orderBy(desc(syncBatches.startedAt)).limit(2_000)
   ]);
 
   const latestBatchBySiteId = new Map<string, (typeof latestBatchRows)[number]>();
@@ -137,7 +156,8 @@ export async function listAssets(db: Database): Promise<unknown[]> {
       version: assetProjection.version
     })
     .from(assetProjection)
-    .orderBy(desc(assetProjection.lastEventAt));
+    .orderBy(desc(assetProjection.lastEventAt))
+    .limit(500);
 }
 
 export async function getAssetById(db: Database, assetId: string): Promise<unknown | null> {
@@ -158,6 +178,7 @@ export async function getAssetById(db: Database, assetId: string): Promise<unkno
         from event_log
         where asset_id = ${assetId}
         order by sequence_number desc
+        limit 200
       `),
     db.execute(sql`
       select i.id, i.status, i.notes, i.inspected_at,
@@ -167,6 +188,7 @@ export async function getAssetById(db: Database, assetId: string): Promise<unkno
       where i.asset_id = ${assetId}
       group by i.id, i.status, i.notes, i.inspected_at
       order by i.inspected_at desc
+      limit 100
     `),
     db.execute(sql`
       select em.id, em.inspection_id, em.mime_type, em.sha256, em.storage_ref, em.recorded_at
@@ -174,6 +196,7 @@ export async function getAssetById(db: Database, assetId: string): Promise<unkno
       join inspection i on i.id = em.inspection_id
       where i.asset_id = ${assetId}
       order by em.recorded_at desc
+      limit 100
     `),
     db.execute(sql`
       select id, rule_code, severity, status, summary, details, detected_at
@@ -209,10 +232,11 @@ export async function getAssetById(db: Database, assetId: string): Promise<unkno
     payload: Record<string, unknown>;
   }>;
 
-  const latestAcceptedEventSequence = timeline[0]
-    ? Number(timeline[0].sequence_number)
-    : projection.lastSequence;
-  const projectionLag = Math.max(0, latestAcceptedEventSequence - projection.lastSequence);
+  const { latestAcceptedEventSequence, projectionLag } = await readAssetStreamPosition(
+    db,
+    assetId,
+    projection.lastSequence
+  );
 
   const siteIdsInTimeline = Array.from(new Set(timeline.map((event) => event.site_id)));
   const syncBatchIds = Array.from(
@@ -264,7 +288,7 @@ export async function getAssetById(db: Database, assetId: string): Promise<unkno
       currentStatus: projection.status,
       lastProjectionSequence: projection.lastSequence,
       lastAcceptedEventSequence: latestAcceptedEventSequence,
-      projectionBehindStream: projection.lastSequence < latestAcceptedEventSequence,
+      projectionBehindStream: projectionLag > 0,
       projectionLag,
       hasPendingReplay,
       hasRejectedReplay,
@@ -307,6 +331,7 @@ export async function getTransferById(db: Database, transferId: string): Promise
         from event_log
         where transfer_order_id = ${transferId}
         order by sequence_number desc
+        limit 200
       `),
       db.execute(sql`
         select id, rule_code, severity, status, summary, detected_at
@@ -340,10 +365,11 @@ export async function getTransferById(db: Database, transferId: string): Promise
     payload: Record<string, unknown>;
   }>;
 
-  const latestAcceptedEventSequence = relatedEvents[0]
-    ? Number(relatedEvents[0].sequence_number)
-    : (projection[0]?.lastSequence ?? 0);
   const lastProjectionSequence = projection[0]?.lastSequence ?? 0;
+  const streamPosition = projection[0]
+    ? await readAssetStreamPosition(db, transfer.assetId, lastProjectionSequence)
+    : { latestAcceptedEventSequence: 0, projectionLag: 0 };
+  const { latestAcceptedEventSequence, projectionLag } = streamPosition;
   const relatedSyncBatchIds = Array.from(
     new Set(
       relatedEvents
@@ -363,7 +389,6 @@ export async function getTransferById(db: Database, transferId: string): Promise
   const hasPendingReplay = linkedSyncBatches.some((batch) => batch.status !== "completed");
   const hasRejectedReplay = linkedSyncBatches.some((batch) => batch.rejectedEventCount > 0);
   const hasStaleSite = relatedSites.some((site) => computeSyncHealth(site.lastSyncCompletedAt) === "stale");
-  const projectionLag = Math.max(0, latestAcceptedEventSequence - lastProjectionSequence);
   const projectionLagAlert = alertRows.rows.find(
     (row) => String(row.rule_code) === "PROJECTION_SEQUENCE_BEHIND_EVENT_STREAM"
   );
@@ -392,7 +417,7 @@ export async function getTransferById(db: Database, transferId: string): Promise
           currentStatus: projection[0].status,
           lastProjectionSequence,
           lastAcceptedEventSequence: latestAcceptedEventSequence,
-          projectionBehindStream: lastProjectionSequence < latestAcceptedEventSequence,
+          projectionBehindStream: projectionLag > 0,
           projectionLag,
           hasPendingReplay,
           hasRejectedReplay,
@@ -422,13 +447,34 @@ export async function getSyncBatchById(db: Database, syncBatchId: string): Promi
     return null;
   }
 
-  const [site, replayedEventsRows] = await Promise.all([
+  const [site, replayedEventsRows, eventAttemptsRows] = await Promise.all([
     db.select().from(sites).where(eq(sites.id, batch.siteId)).limit(1),
     db.execute(sql`
       select id, sequence_number, event_type, asset_id, site_id, occurred_at, ingested_at, source_site_event_id, payload
       from event_log
       where sync_batch_id = ${syncBatchId}
       order by sequence_number asc
+      limit 1000
+    `),
+    db.execute(sql`
+      select
+        a.id,
+        a.event_index,
+        a.source_site_event_id,
+        a.event_hash,
+        a.disposition,
+        a.event_id,
+        a.error_code,
+        a.error_message,
+        a.attempted_at,
+        e.sequence_number,
+        e.event_type,
+        e.asset_id
+      from sync_batch_event_attempt a
+      left join event_log e on e.id = a.event_id
+      where a.sync_batch_id = ${syncBatchId}
+      order by a.event_index, a.attempted_at
+      limit 1000
     `)
   ]);
 
@@ -443,16 +489,45 @@ export async function getSyncBatchById(db: Database, syncBatchId: string): Promi
     source_site_event_id: string | null;
     payload: Record<string, unknown>;
   }>;
-  const replayDiagnostics = parseReplayDiagnostics(batch.replayResultSummary, batch.rejectedEventCount);
-  const affectedAssetIds = new Set(replayedEvents.map((event) => event.asset_id).filter(Boolean));
+  const eventAttempts = eventAttemptsRows.rows as Array<{
+    id: string;
+    event_index: number;
+    source_site_event_id: string;
+    event_hash: string;
+    disposition: string;
+    event_id: string | null;
+    error_code: string | null;
+    error_message: string | null;
+    attempted_at: string;
+    sequence_number: number | string | null;
+    event_type: string | null;
+    asset_id: string | null;
+  }>;
+  const replayDiagnostics = parseReplayDiagnostics(
+    batch.replayResultSummary,
+    batch.rejectedEventCount,
+    batch.deduplicatedEventCount
+  );
+  const affectedAssetIds = new Set(
+    eventAttempts
+      .map((event) => event.asset_id)
+      .filter((assetId): assetId is string => Boolean(assetId))
+  );
 
   return {
     batch,
     site: site[0] ?? null,
     replayedEvents,
+    eventAttempts,
     replayDiagnostics,
     affectedAssets: Array.from(affectedAssetIds),
-    affectedEventTypes: Array.from(new Set(replayedEvents.map((event) => event.event_type)))
+    affectedEventTypes: Array.from(
+      new Set(
+        eventAttempts
+          .map((event) => event.event_type)
+          .filter((eventType): eventType is string => Boolean(eventType))
+      )
+    )
   };
 }
 
@@ -482,10 +557,10 @@ export async function getSiteById(db: Database, siteId: string): Promise<unknown
       limit 50
     `),
     db.execute(sql`
-      select id, rule_code, severity, status, summary, detected_at
+      select id, rule_code, severity, status, summary, detected_at, last_detected_at
       from alert
       where site_id = ${siteId}
-      order by detected_at desc
+      order by last_detected_at desc
       limit 30
     `),
     db.execute(sql`
@@ -579,10 +654,11 @@ export async function getReconciliationCaseById(
       ? db.select().from(syncBatches).where(inArray(syncBatches.id, relatedSyncBatchIds))
       : Promise.resolve([])
   ]);
-  const latestAcceptedEventSequence = relatedEvents[0]
-    ? Number(relatedEvents[0].sequence_number)
-    : (projectionRow[0]?.lastSequence ?? 0);
   const lastProjectionSequence = projectionRow[0]?.lastSequence ?? 0;
+  const streamPosition = caseRow.assetId && projectionRow[0]
+    ? await readAssetStreamPosition(db, caseRow.assetId, lastProjectionSequence)
+    : { latestAcceptedEventSequence: lastProjectionSequence, projectionLag: 0 };
+  const { latestAcceptedEventSequence, projectionLag } = streamPosition;
   const linkedTransferId =
     relatedEvents.find((event) => event.transfer_order_id)?.transfer_order_id ?? null;
   const resolutionEvent =
@@ -599,7 +675,7 @@ export async function getReconciliationCaseById(
       ? alertRow[0].summary
       : null;
   const lagReason =
-    projectionRow[0] && projectionRow[0].lastSequence < latestAcceptedEventSequence
+    projectionLag > 0
       ? hasPendingReplay
         ? "Projection lag is likely due to replay not yet completed for one or more linked batches."
         : hasRejectedReplay
@@ -621,8 +697,8 @@ export async function getReconciliationCaseById(
           currentStatus: projectionRow[0].status,
           lastProjectionSequence,
           lastAcceptedEventSequence: latestAcceptedEventSequence,
-          projectionBehindStream: lastProjectionSequence < latestAcceptedEventSequence,
-          projectionLag: Math.max(0, latestAcceptedEventSequence - lastProjectionSequence),
+          projectionBehindStream: projectionLag > 0,
+          projectionLag,
           hasPendingReplay,
           hasRejectedReplay,
           hasStaleSite,
@@ -656,15 +732,19 @@ export async function getReconciliationCaseById(
 }
 
 export async function listTransfers(db: Database): Promise<unknown[]> {
-  return db.select().from(transferOrders).orderBy(desc(transferOrders.initiatedAt));
+  return db.select().from(transferOrders).orderBy(desc(transferOrders.initiatedAt)).limit(500);
 }
 
 export async function listAlerts(db: Database): Promise<unknown[]> {
-  return db.select().from(alerts).orderBy(desc(alerts.detectedAt));
+  return db.select().from(alerts).orderBy(desc(alerts.lastDetectedAt)).limit(500);
 }
 
 export async function listReconciliationCases(db: Database): Promise<unknown[]> {
-  return db.select().from(reconciliationCases).orderBy(desc(reconciliationCases.openedAt));
+  return db
+    .select()
+    .from(reconciliationCases)
+    .orderBy(desc(reconciliationCases.openedAt))
+    .limit(500);
 }
 
 export async function listEvidenceMetadata(db: Database): Promise<unknown[]> {
@@ -673,6 +753,7 @@ export async function listEvidenceMetadata(db: Database): Promise<unknown[]> {
     from evidence_metadata em
     join inspection i on i.id = em.inspection_id
     order by em.recorded_at desc
+    limit 500
   `);
 
   return rows.rows;
@@ -683,44 +764,54 @@ export async function openReconciliationCase(
   input: {
     alertId?: string;
     assetId?: string;
-    siteId?: string;
+    siteId: string;
     title: string;
     description: string;
-    openedBy: string;
-  }
+  },
+  actor: string
 ): Promise<unknown> {
-  const [fallbackSite] = await db.select({ id: sites.id }).from(sites).limit(1);
-  const siteId = input.siteId ?? fallbackSite?.id ?? null;
-  if (!siteId) {
-    throw new ApiError(400, "Cannot open reconciliation case without at least one site");
+  const [site] = await db.select({ id: sites.id }).from(sites).where(eq(sites.id, input.siteId)).limit(1);
+  if (!site) {
+    throw new ApiError(400, "Unknown site", undefined, "UNKNOWN_SITE");
+  }
+
+  const [sourceAlert] = input.alertId
+    ? await db.select().from(alerts).where(eq(alerts.id, input.alertId)).limit(1)
+    : [];
+  if (input.alertId && !sourceAlert) {
+    throw new ApiError(400, "Unknown alert", undefined, "UNKNOWN_ALERT");
+  }
+  if (sourceAlert?.siteId && sourceAlert.siteId !== input.siteId) {
+    throw new ApiError(409, "Selected site does not match the alert", undefined, "ALERT_CASE_CONFLICT");
+  }
+  if (sourceAlert?.assetId && input.assetId && sourceAlert.assetId !== input.assetId) {
+    throw new ApiError(409, "Selected asset does not match the alert", undefined, "ALERT_CASE_CONFLICT");
+  }
+  const assetId = sourceAlert?.assetId ?? input.assetId ?? null;
+  if (assetId) {
+    const [asset] = await db
+      .select({ assetId: assetProjection.assetId })
+      .from(assetProjection)
+      .where(eq(assetProjection.assetId, assetId))
+      .limit(1);
+    if (!asset) throw new ApiError(400, "Unknown asset", undefined, "UNKNOWN_ASSET");
   }
 
   const id = randomUUID();
-  await db.insert(reconciliationCases).values({
-    id,
-    alertId: input.alertId ?? null,
-    assetId: input.assetId ?? null,
-    siteId,
-    title: input.title,
-    description: input.description,
-    openedBy: input.openedBy,
-    status: "open",
-    openedAt: new Date()
-  });
-
-  await db.insert(eventLog).values({
-    id: randomUUID(),
+  const occurredAt = new Date().toISOString();
+  await ingestEvent(db, {
     eventType: "reconciliation_opened",
-    assetId: input.assetId ?? null,
-    siteId,
+    assetId,
+    siteId: input.siteId,
     transferOrderId: null,
-    syncBatchId: null,
-    sourceSiteEventId: null,
-    occurredAt: new Date(),
+    sourceSiteEventId: `operator-case:${id}:open`,
+    occurredAt,
     payload: {
       caseId: id,
-      alertId: input.alertId ?? randomUUID(),
-      openedBy: input.openedBy
+      alertId: input.alertId ?? null,
+      title: input.title,
+      description: input.description,
+      openedBy: actor
     }
   });
 
@@ -736,7 +827,12 @@ export async function openReconciliationCase(
 export async function resolveReconciliationCase(
   db: Database,
   caseId: string,
-  input: { resolvedBy: string; resolutionSummary: string }
+  input: {
+    resolutionSummary: string;
+    expectedVersion: number;
+    resolvedAssetStatus?: "registered" | "in_transit" | "at_site" | "under_inspection" | null;
+  },
+  actor: string
 ): Promise<unknown | null> {
   const [current] = await db
     .select()
@@ -746,37 +842,54 @@ export async function resolveReconciliationCase(
   if (!current) {
     return null;
   }
-
-  await db
-    .update(reconciliationCases)
-    .set({
-      status: "resolved",
-      resolvedBy: input.resolvedBy,
-      resolutionSummary: input.resolutionSummary,
-      resolvedAt: new Date()
-    })
-    .where(eq(reconciliationCases.id, caseId));
-
-  const [fallbackSite] = await db.select({ id: sites.id }).from(sites).limit(1);
-  const siteId = current.siteId ?? fallbackSite?.id ?? null;
-
-  if (siteId) {
-    await db.insert(eventLog).values({
-      id: randomUUID(),
-      eventType: "reconciliation_resolved",
-      assetId: current.assetId ?? null,
-      siteId,
-      transferOrderId: null,
-      syncBatchId: null,
-      sourceSiteEventId: null,
-      occurredAt: new Date(),
-      payload: {
-        caseId,
-        resolvedBy: input.resolvedBy,
-        resolutionSummary: input.resolutionSummary
-      }
-    });
+  if (current.status !== "open") {
+    throw new ApiError(409, "Reconciliation case is already resolved", undefined, "CASE_ALREADY_RESOLVED");
   }
+  if (current.version !== input.expectedVersion) {
+    throw new ApiError(
+      409,
+      "Reconciliation case changed",
+      { currentVersion: current.version },
+      "CASE_VERSION_CONFLICT"
+    );
+  }
+
+  if (!current.siteId) {
+    throw new ApiError(409, "Reconciliation case has no attributable site", undefined, "CASE_IDENTITY_CONFLICT");
+  }
+  if (current.assetId && !input.resolvedAssetStatus) {
+    throw new ApiError(
+      400,
+      "Asset-linked cases require an explicit resolved asset status",
+      undefined,
+      "RESOLVED_ASSET_STATUS_REQUIRED"
+    );
+  }
+  if (!current.assetId && input.resolvedAssetStatus) {
+    throw new ApiError(
+      400,
+      "Site-level cases cannot set an asset status",
+      undefined,
+      "RESOLVED_ASSET_STATUS_NOT_APPLICABLE"
+    );
+  }
+  await ingestEvent(db, {
+    eventType: "reconciliation_resolved",
+    assetId: current.assetId,
+    siteId: current.siteId,
+    transferOrderId: null,
+    occurredAt: new Date().toISOString(),
+    // The case row/version is the concurrency token. Avoid manufacturing an
+    // idempotency key from mutable timestamps for this server-owned action.
+    sourceSiteEventId: null,
+    payload: {
+      caseId,
+      resolvedBy: actor,
+      resolutionSummary: input.resolutionSummary,
+      resolvedAssetStatus: input.resolvedAssetStatus ?? null,
+      expectedCaseVersion: input.expectedVersion
+    }
+  });
 
   const [updated] = await db
     .select()
@@ -788,11 +901,11 @@ export async function resolveReconciliationCase(
 }
 
 export async function listSyncBatches(db: Database): Promise<unknown[]> {
-  return db.select().from(syncBatches).orderBy(desc(syncBatches.startedAt));
+  return db.select().from(syncBatches).orderBy(desc(syncBatches.startedAt)).limit(500);
 }
 
 export async function dashboardSummary(db: Database): Promise<Record<string, number>> {
-  const [openCaseCount, staleSiteCount, inTransitCount, recentAlertCount, replayStats, evidenceGapCount] =
+  const [openCaseCount, staleSiteCount, inTransitCount, recentAlertCount, replayStats, evidenceGapCount, openAlertStats] =
     await Promise.all([
       db
         .select({ value: count() })
@@ -811,7 +924,7 @@ export async function dashboardSummary(db: Database): Promise<Record<string, num
       db.execute(sql`
         select count(*)::int as value
         from alert
-        where detected_at > now() - interval '24 hours'
+        where last_detected_at > now() - interval '24 hours'
       `),
       db.execute(sql`
         select
@@ -829,6 +942,17 @@ export async function dashboardSummary(db: Database): Promise<Record<string, num
           group by i.id
           having count(em.id) = 0
         ) gaps
+      `),
+      db.execute(sql`
+        select
+          count(*) filter (where severity = 'high')::int as open_high_severity_alerts,
+          count(*) filter (where rule_code = 'TRANSFER_NOT_CONFIRMED')::int as transfer_timeout_alerts,
+          count(*) filter (where rule_code = 'ASSET_OBSERVED_AT_MULTIPLE_SITES')::int as dual_site_alerts,
+          count(*) filter (where rule_code = 'PROJECTION_SEQUENCE_BEHIND_EVENT_STREAM')::int as projection_lag_alerts,
+          count(*) filter (where rule_code = 'INSPECTION_MISSING_EVIDENCE')::int as evidence_gap_alerts,
+          count(*) filter (where rule_code = 'SITE_PROJECTION_STALE')::int as stale_site_alerts
+        from alert
+        where status in ('open', 'acknowledged')
       `)
     ]);
 
@@ -839,7 +963,13 @@ export async function dashboardSummary(db: Database): Promise<Record<string, num
     recentAlerts: Number(recentAlertCount.rows[0]?.value ?? 0),
     replaySuccessCount: Number(replayStats.rows[0]?.replay_success_count ?? 0),
     replayFailureCount: Number(replayStats.rows[0]?.replay_failure_count ?? 0),
-    unresolvedEvidenceGaps: Number(evidenceGapCount.rows[0]?.value ?? 0)
+    unresolvedEvidenceGaps: Number(evidenceGapCount.rows[0]?.value ?? 0),
+    openHighSeverityAlerts: Number(openAlertStats.rows[0]?.open_high_severity_alerts ?? 0),
+    openTransferTimeoutAlerts: Number(openAlertStats.rows[0]?.transfer_timeout_alerts ?? 0),
+    openDualSiteAlerts: Number(openAlertStats.rows[0]?.dual_site_alerts ?? 0),
+    openProjectionLagAlerts: Number(openAlertStats.rows[0]?.projection_lag_alerts ?? 0),
+    openEvidenceGapAlerts: Number(openAlertStats.rows[0]?.evidence_gap_alerts ?? 0),
+    openStaleSiteAlerts: Number(openAlertStats.rows[0]?.stale_site_alerts ?? 0)
   };
 }
 
@@ -848,7 +978,7 @@ export async function recentTransfers(db: Database): Promise<unknown[]> {
 }
 
 export async function recentAlerts(db: Database): Promise<unknown[]> {
-  return db.select().from(alerts).orderBy(desc(alerts.detectedAt)).limit(10);
+  return db.select().from(alerts).orderBy(desc(alerts.lastDetectedAt)).limit(10);
 }
 
 export async function recentBatches(db: Database): Promise<unknown[]> {

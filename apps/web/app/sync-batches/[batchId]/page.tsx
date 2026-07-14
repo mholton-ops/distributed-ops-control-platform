@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { CopyValue } from "../../../components/copy-value";
 import { EventInspector } from "../../../components/event-inspector";
 import { StatusBadge } from "../../../components/status-badge";
-import { fetchJson } from "../../../lib/api";
+import { fetchJson, isApiNotFound } from "../../../lib/api";
 import {
   formatCodeLabel,
   formatTimestampWithAge,
@@ -22,6 +22,7 @@ type SyncBatchDetailsResponse = {
       queuedEventCount: number;
       acceptedEventCount: number;
       rejectedEventCount: number;
+      deduplicatedEventCount: number;
       replayResultSummary: string | null;
     };
     site: { id: string; code: string; name: string } | null;
@@ -35,6 +36,20 @@ type SyncBatchDetailsResponse = {
       ingested_at: string;
       source_site_event_id: string | null;
       payload: Record<string, unknown>;
+    }>;
+    eventAttempts: Array<{
+      id: string;
+      event_index: number;
+      source_site_event_id: string;
+      event_hash: string;
+      disposition: string;
+      event_id: string | null;
+      error_code: string | null;
+      error_message: string | null;
+      attempted_at: string;
+      sequence_number: number | string | null;
+      event_type: string | null;
+      asset_id: string | null;
     }>;
     replayDiagnostics: {
       idempotencyModel: string;
@@ -56,8 +71,11 @@ export default async function SyncBatchDetailPage({
 
   try {
     details = await fetchJson<SyncBatchDetailsResponse>(`/sync-batches/${batchId}`);
-  } catch {
-    notFound();
+  } catch (error) {
+    if (isApiNotFound(error)) {
+      notFound();
+    }
+    throw error;
   }
 
   const batch = details.data.batch;
@@ -98,9 +116,9 @@ export default async function SyncBatchDetailPage({
           <div className="rounded border border-line bg-panelMuted p-3">
             <div className="text-xs text-fgMuted">Replay Counts</div>
             <div className="text-sm">Queued {batch.queuedEventCount}</div>
-            <div className="text-sm">Accepted {batch.acceptedEventCount}</div>
+            <div className="text-sm">Accepted (including deduplicated) {batch.acceptedEventCount}</div>
             <div className="text-sm">Rejected {batch.rejectedEventCount}</div>
-            <div className="text-sm">Deduplicated {details.data.replayDiagnostics.deduplicatedEventCount}</div>
+            <div className="text-sm">Deduplicated subset {details.data.replayDiagnostics.deduplicatedEventCount}</div>
           </div>
         </div>
       </section>
@@ -138,9 +156,67 @@ export default async function SyncBatchDetailPage({
       </section>
 
       <section className="rounded-lg border border-line bg-panel p-4">
-        <h3 className="mb-2 text-base font-semibold">Replayed Events</h3>
+        <h3 className="mb-2 text-base font-semibold">Replay Event Dispositions</h3>
         <p className="mb-3 text-xs text-fgMuted">
-          Use <span className="font-medium">Inspect</span> on any row to view normalized payload fields.
+          One durable outcome per submitted queue position, including exact deduplication and rejection details.
+        </p>
+        <div className="overflow-x-auto">
+          <table>
+            <thead>
+              <tr>
+                <th>Index</th>
+                <th>Disposition</th>
+                <th>Event</th>
+                <th>Asset</th>
+                <th>Source Event ID</th>
+                <th>Event Hash</th>
+                <th>Ledger Link</th>
+                <th>Attempted</th>
+                <th>Failure</th>
+              </tr>
+            </thead>
+            <tbody>
+              {details.data.eventAttempts.map((attempt) => (
+                <tr key={attempt.id}>
+                  <td>{attempt.event_index}</td>
+                  <td><StatusBadge value={attempt.disposition} /></td>
+                  <td>{attempt.event_type ? formatCodeLabel(attempt.event_type) : "-"}</td>
+                  <td className="font-mono text-xs" title={attempt.asset_id ?? undefined}>
+                    {attempt.asset_id ? (
+                      <Link href={`/assets/${attempt.asset_id}`} className="text-fg">
+                        {shortId(attempt.asset_id, 10)}
+                      </Link>
+                    ) : "-"}
+                  </td>
+                  <td className="max-w-64 break-all font-mono text-xs">{attempt.source_site_event_id}</td>
+                  <td className="font-mono text-xs" title={attempt.event_hash}>
+                    {shortId(attempt.event_hash, 12)}
+                  </td>
+                  <td className="font-mono text-xs" title={attempt.event_id ?? undefined}>
+                    {attempt.event_id ? `#${attempt.sequence_number ?? "?"} ${shortId(attempt.event_id, 8)}` : "-"}
+                  </td>
+                  <td>{formatTimestampWithAge(attempt.attempted_at)}</td>
+                  <td>
+                    {attempt.error_code ? (
+                      <span title={attempt.error_message ?? undefined}>
+                        {formatCodeLabel(attempt.error_code)}{attempt.error_message ? `: ${attempt.error_message}` : ""}
+                      </span>
+                    ) : "-"}
+                  </td>
+                </tr>
+              ))}
+              {details.data.eventAttempts.length === 0 ? (
+                <tr><td colSpan={9} className="text-fgMuted">No queued event attempts were recorded.</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-line bg-panel p-4">
+        <h3 className="mb-2 text-base font-semibold">Batch Ledger Events</h3>
+        <p className="mb-3 text-xs text-fgMuted">
+          Newly appended operating events and server-owned sync lifecycle events. Deduplicated and rejected queue items remain visible in the disposition table above.
         </p>
         <div className="overflow-x-auto">
           <table>
